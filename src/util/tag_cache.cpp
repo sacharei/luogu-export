@@ -3,6 +3,7 @@
 #include <cstdlib>
 #include <nlohmann/json.hpp>
 #include "luogu-export/crawler/crawler.h"
+#include "luogu-export/util/compat.h"
 #include "luogu-export/util/tag_cache.h"
 
 using nlohmann::json;
@@ -13,7 +14,7 @@ bool tagcache::Cache::load(const std::filesystem::path &path)
     name_to_id.clear();
     name_to_type.clear();
 
-    FILE *in = std::fopen(path.c_str(), "rb");
+    FILE *in = luogu::compat::fopen(path, "rb");
     if (!in)
         return false;
 

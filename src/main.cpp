@@ -1,16 +1,27 @@
 // src/main.cpp
+// MSVC 没有 POSIX getopt，使用自带的最小实现（语义与 GNU getopt 一致：
+// 长选项、无歧义前缀缩写、':' 前缀 optstring 等本程序用到的行为）。
+// LUOGU_FORCE_COMPAT_GETOPT 用于在非 Windows 平台强制测试该实现。
+#if defined(LUOGU_FORCE_COMPAT_GETOPT) || \
+    (defined(_WIN32) && !defined(__MINGW32__) && !defined(__CYGWIN__))
+#include "luogu-export/util/getopt_compat.h"
+#else
 #include <getopt.h>
+#endif
 #include <curl/curl.h>
 #include <algorithm>
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
+#include <filesystem>
 #include <string>
 #include <vector>
 #include "luogu-export/crawler/crawler.h"
 #include "luogu-export/export/common.h"
 #include "luogu-export/export/latex.h"
 #include "luogu-export/export/markdown.h"
+#include "luogu-export/util/compat.h"
 #include "luogu-export/util/tag_cache.h"
 
 namespace
@@ -26,6 +37,19 @@ struct Options
     bool help = false;      // -h, --help
     bool show_explicit = false; // 是否显式给了 --show
     std::string output;     // --output（空则按模式取默认 problems.md / problems.tex）
+
+    // ---- 导出设置参数 ----
+    bool no_toc_links = false;      // --no-toc-links：目录条目不带跳转超链接（仅 -L）
+    bool toc_backlinks = false;     // --toc-backlinks：页码为跳回目录的超链接（仅 -L）
+    bool no_bilibili_link = false;  // --no-bilibili-link：bilibili URL 输出为普通文本（仅 -L）
+    std::string font_cover;         // --set-font-cover-page（仅 -L）
+    std::string font_body_zh;       // --set-font-body-zh-CN（仅 -L）
+    std::string font_body_en;       // --set-font-body-en-US（仅 -L）
+    std::string font_body_codes;    // --set-font-body-codes（仅 -L）
+    std::string font_title_zh;      // --set-font-title-zh-CN（仅 -L）
+    std::string font_title_en;      // --set-font-title-en-US（仅 -L）
+    std::string cover_title;        // --set-cover-title（-L / -M 均支持）
+
     luogu::ExportFilter filter; // -M / -L 共用的筛选条件
 };
 
@@ -39,7 +63,58 @@ enum
     OPT_LANG,
     OPT_SHOW,
     OPT_TAGS,
+    OPT_NO_TOC_LINKS,
+    OPT_TOC_BACKLINKS,
+    OPT_FONT_COVER,
+    OPT_FONT_BODY_ZH,
+    OPT_FONT_BODY_EN,
+    OPT_FONT_BODY_CODES,
+    OPT_FONT_TITLE_ZH,
+    OPT_FONT_TITLE_EN,
+    OPT_NO_BILIBILI_LINK,
+    OPT_COVER_TITLE,
 };
+
+// 选项码 → 长选项名（用于报错信息）
+inline const char *option_name_for(int code)
+{
+    switch (code)
+    {
+    case OPT_TAG: return "--tag";
+    case OPT_DIFFICULTY: return "--difficulty";
+    case OPT_OUTPUT: return "--output";
+    case OPT_TYPE: return "--type";
+    case OPT_LANG: return "--lang";
+    case OPT_SHOW: return "--show";
+    case OPT_FONT_COVER: return "--set-font-cover-page";
+    case OPT_FONT_BODY_ZH: return "--set-font-body-zh-CN";
+    case OPT_FONT_BODY_EN: return "--set-font-body-en-US";
+    case OPT_FONT_BODY_CODES: return "--set-font-body-codes";
+    case OPT_FONT_TITLE_ZH: return "--set-font-title-zh-CN";
+    case OPT_FONT_TITLE_EN: return "--set-font-title-en-US";
+    case OPT_COVER_TITLE: return "--set-cover-title";
+    default: return "";
+    }
+}
+
+// 选项缺失参数值时，给出“需要什么参数”的说明（用于中文报错）
+inline std::string option_argument_hint(const std::string &token)
+{
+    if (token == "--tag") return "标签名称或数字 ID";
+    if (token == "--difficulty") return "难度（0-8，或区间 1-4）";
+    if (token == "--output") return "输出文件路径";
+    if (token == "--type") return "题目类型（B 或 P）";
+    if (token == "--lang") return "题面语言（zh-CN 或 en）";
+    if (token == "--show") return "两位显示开关（如 11）";
+    if (token == "--set-font-cover-page") return "字体名称或字体文件地址";
+    if (token == "--set-font-body-zh-CN") return "字体名称或字体文件地址";
+    if (token == "--set-font-body-en-US") return "字体名称或字体文件地址";
+    if (token == "--set-font-body-codes") return "字体名称或字体文件地址";
+    if (token == "--set-font-title-zh-CN") return "字体名称或字体文件地址";
+    if (token == "--set-font-title-en-US") return "字体名称或字体文件地址";
+    if (token == "--set-cover-title") return "封面标题";
+    return "";
+}
 
 const char *kUsage =
     "Usage: luogu-export [options]\n"
@@ -63,6 +138,35 @@ const char *kUsage =
     "                          1 shows, 0 hides (default: 11). Hiding tags only hides\n"
     "                          algorithm-type tags, other types are always shown\n"
     "      --output <file>     Output file (default: problems.md / problems.tex)\n"
+    "\n"
+    "LaTeX layout options (only effective with -L):\n"
+    "      --no-toc-links      Remove the hyperlinks on table-of-contents entries\n"
+    "                          (by default each entry links to its problem page)\n"
+    "      --toc-backlinks     Make the page number in each header a hyperlink back to\n"
+    "                          the table of contents (disabled by default)\n"
+    "      --set-font-cover-page <font>\n"
+    "                          Set the font of the cover title. <font> is either the\n"
+    "                          name of a font installed on the system, or a path to a\n"
+    "                          font file (e.g. .ttf / .otf / .ttc)\n"
+    "      --set-font-body-zh-CN <font>\n"
+    "                          Set the font of CJK characters in problem statements\n"
+    "                          (<font>: installed font name or font file path)\n"
+    "      --set-font-body-en-US <font>\n"
+    "                          Set the font of western characters in problem statements;\n"
+    "                          math formulas are not affected\n"
+    "      --set-font-body-codes <font>\n"
+    "                          Set the font of code blocks (default: Consolas)\n"
+    "      --set-font-title-zh-CN <font>\n"
+    "                          Set the font of CJK characters in problem titles,\n"
+    "                          including titles in the table of contents and page headers\n"
+    "      --set-font-title-en-US <font>\n"
+    "                          Set the font of western characters in problem titles,\n"
+    "                          including titles in the table of contents and page headers\n"
+    "      --no-bilibili-link  Print bilibili video URLs as plain text instead of\n"
+    "                          hyperlinks (hyperlinks are enabled by default)\n"
+    "      --set-cover-title <title>\n"
+    "                          Set the cover title (-L) or the top-level heading (-M);\n"
+    "                          default: luogu export (-L) / 洛谷题目导出 (-M)\n"
     "  -h, --help      Show this help message\n";
 
 void printUsage()
@@ -78,6 +182,14 @@ inline void printError(const std::string &message)
 inline void printSuccess(const std::string &message)
 {
     std::printf("\033[1;32m%s\033[0m\n", message.c_str());
+}
+
+inline std::string to_lower_ascii(const std::string &s)
+{
+    std::string out = s;
+    for (auto &c : out)
+        c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return out;
 }
 
 // 按空白把字符串拆成多个 token（用于 --tag 模拟 贪心 这类写法）
@@ -96,6 +208,111 @@ inline std::vector<std::string> split_whitespace(const std::string &s)
             out.push_back(s.substr(start, i - start));
     }
     return out;
+}
+
+// 校验字体参数（--set-font-*）的值，并区分两种写法：
+// - 系统已安装的字体名称：直接透传给 fontspec；
+// - 字体文件地址：含路径分隔符、以常见字体扩展名结尾，或当前目录下存在
+//   同名文件时按文件处理。文件地址必须真实存在，否则报错拒绝执行；
+//   存在时转成绝对路径并把 '\' 归一化为 '/'，便于写入 LaTeX 代码。
+// 返回错误信息（空串表示合法）；合法时把规范化结果写入 font_out。
+// 识别字体文件的实际格式（按文件头魔数），返回应使用的扩展名（含点号）；
+// 无法识别时返回空串。用于给无扩展名的字体文件补全扩展名。
+inline std::string detect_font_extension(const std::filesystem::path &path)
+{
+    FILE *f = luogu::compat::fopen(path, "rb");
+    if (!f)
+        return "";
+    unsigned char head[4] = {0};
+    const size_t n = std::fread(head, 1, sizeof(head), f);
+    std::fclose(f);
+    if (n < 4)
+        return "";
+    // TrueType：00 01 00 00 / 'true' / 'typ1'
+    if ((head[0] == 0x00 && head[1] == 0x01 && head[2] == 0x00 && head[3] == 0x00) ||
+        std::memcmp(head, "true", 4) == 0 ||
+        std::memcmp(head, "typ1", 4) == 0)
+        return ".ttf";
+    // OpenType（CFF）：'OTTO'
+    if (std::memcmp(head, "OTTO", 4) == 0)
+        return ".otf";
+    // TrueType Collection：'ttcf'
+    if (std::memcmp(head, "ttcf", 4) == 0)
+        return ".ttc";
+    return "";
+}
+
+inline std::string validate_font_option(const std::string &option_name,
+                                        const std::string &value,
+                                        std::string &font_out)
+{
+    if (value.empty() || value[0] == '-')
+        return "参数 '" + option_name + "' 后缺少字体名称或字体文件地址；正确用法：" +
+               option_name + " <字体名称或字体文件地址>";
+
+    const bool has_separator = value.find('/') != std::string::npos ||
+                               value.find('\\') != std::string::npos;
+    const std::string lower = to_lower_ascii(value);
+    static const char *kFontExts[] = {".ttf", ".otf", ".ttc", ".dfont",
+                                      ".pfb", ".woff", ".woff2"};
+    bool has_ext = false;
+    for (const char *e : kFontExts)
+    {
+        const size_t n = std::strlen(e);
+        if (lower.size() >= n && lower.compare(lower.size() - n, n, e) == 0)
+        {
+            has_ext = true;
+            break;
+        }
+    }
+
+    std::error_code ec;
+    const bool file_exists_now =
+        std::filesystem::exists(luogu::compat::path_from_utf8(value), ec) && !ec;
+
+    // 不含路径特征且不是现存文件 → 按系统已安装的字体名称处理
+    if (!has_separator && !has_ext && !file_exists_now)
+    {
+        font_out = value;
+        return "";
+    }
+
+    // 按字体文件地址处理：文件必须存在，否则拒绝执行
+    std::filesystem::path p =
+        std::filesystem::absolute(luogu::compat::path_from_utf8(value), ec);
+    if (ec || !std::filesystem::exists(p, ec))
+        return "参数 '" + option_name + "' 指定的字体文件 '" + value +
+               "' 不存在；请检查文件路径，或改用系统已安装的字体名称";
+
+    // 无扩展名的字体文件：fontspec 无法加载，按文件头识别格式后复制到
+    // 缓存目录并补上扩展名，生成的 LaTeX 引用副本
+    if (!p.has_extension())
+    {
+        const std::string ext = detect_font_extension(p);
+        if (ext.empty())
+            return "参数 '" + option_name + "' 指定的字体文件 '" + value +
+                   "' 无法识别其字体格式；请使用 .ttf / .otf / .ttc 格式的字体文件，"
+                   "或改用系统已安装的字体名称";
+        const std::filesystem::path cache_fonts = crawler::get_cache_dir() / "fonts";
+        std::error_code ec2;
+        if (!std::filesystem::exists(cache_fonts, ec2) &&
+            !std::filesystem::create_directories(cache_fonts, ec2))
+        {
+            return "无法创建字体缓存目录 '" + cache_fonts.string() + "': " + ec2.message();
+        }
+        std::filesystem::path target = cache_fonts / (p.filename().string() + ext);
+        for (int i = 1; std::filesystem::exists(target, ec2); ++i)
+            target = cache_fonts / (p.filename().string() + "_" + std::to_string(i) + ext);
+        std::filesystem::copy_file(p, target, std::filesystem::copy_options::none, ec2);
+        if (ec2)
+            return "无法把字体文件复制到缓存目录: " + ec2.message();
+        p = std::filesystem::absolute(target, ec2);
+    }
+
+    std::string spec = p.string();
+    std::replace(spec.begin(), spec.end(), '\\', '/');
+    font_out = std::move(spec);
+    return "";
 }
 
 // 解析难度规格："N"（单个数字）或 "A-B"（闭区间），展开后追加到 difficulties
@@ -189,6 +406,10 @@ inline bool print_tag_list()
 
 int main(int argc, char *argv[])
 {
+    // Windows 传统控制台启用 ANSI 转义解析（彩色/进度输出不乱码）；
+    // 其他平台为空操作
+    luogu::compat::init_console();
+
     // 长选项表：以后新增参数时在这里加一项，并在下方 switch 中处理。
     static const struct option kLongOptions[] = {
         {"update",     no_argument,       nullptr, 'U'},
@@ -201,13 +422,25 @@ int main(int argc, char *argv[])
         {"lang",       required_argument, nullptr, OPT_LANG},
         {"show",       required_argument, nullptr, OPT_SHOW},
         {"tags",       no_argument,       nullptr, OPT_TAGS},
+        {"no-toc-links",         no_argument,       nullptr, OPT_NO_TOC_LINKS},
+        {"toc-backlinks",        no_argument,       nullptr, OPT_TOC_BACKLINKS},
+        {"set-font-cover-page",  required_argument, nullptr, OPT_FONT_COVER},
+        {"set-font-body-zh-CN",  required_argument, nullptr, OPT_FONT_BODY_ZH},
+        {"set-font-body-en-US",  required_argument, nullptr, OPT_FONT_BODY_EN},
+        {"set-font-body-codes",  required_argument, nullptr, OPT_FONT_BODY_CODES},
+        {"set-font-title-zh-CN", required_argument, nullptr, OPT_FONT_TITLE_ZH},
+        {"set-font-title-en-US", required_argument, nullptr, OPT_FONT_TITLE_EN},
+        {"no-bilibili-link",     no_argument,       nullptr, OPT_NO_BILIBILI_LINK},
+        {"set-cover-title",      required_argument, nullptr, OPT_COVER_TITLE},
         {"help",       no_argument,       nullptr, 'h'},
         {nullptr,      0,                 nullptr, 0},
     };
 
     Options options;
     int opt;
-    while ((opt = getopt_long(argc, argv, "UMLh", kLongOptions, nullptr)) != -1)
+    // 短选项串以 ':' 开头：getopt 出错时不打印英文提示，
+    // 由下面的 '?' / ':' 分支输出统一的中文错误信息
+    while ((opt = getopt_long(argc, argv, ":UMLh", kLongOptions, nullptr)) != -1)
     {
         switch (opt)
         {
@@ -281,10 +514,78 @@ int main(int argc, char *argv[])
         case OPT_TAGS:
             options.list_tags = true;
             break;
+        case OPT_NO_TOC_LINKS:
+            options.no_toc_links = true;
+            break;
+        case OPT_TOC_BACKLINKS:
+            options.toc_backlinks = true;
+            break;
+        case OPT_NO_BILIBILI_LINK:
+            options.no_bilibili_link = true;
+            break;
+        case OPT_FONT_COVER:
+        case OPT_FONT_BODY_ZH:
+        case OPT_FONT_BODY_EN:
+        case OPT_FONT_BODY_CODES:
+        case OPT_FONT_TITLE_ZH:
+        case OPT_FONT_TITLE_EN:
+        {
+            // 校验字体参数（区分系统字体名称与字体文件地址），出错时拒绝执行
+            std::string spec;
+            const std::string err = validate_font_option(option_name_for(opt), optarg, spec);
+            if (!err.empty())
+            {
+                printError(err);
+                return 1;
+            }
+            switch (opt)
+            {
+            case OPT_FONT_COVER: options.font_cover = std::move(spec); break;
+            case OPT_FONT_BODY_ZH: options.font_body_zh = std::move(spec); break;
+            case OPT_FONT_BODY_EN: options.font_body_en = std::move(spec); break;
+            case OPT_FONT_BODY_CODES: options.font_body_codes = std::move(spec); break;
+            case OPT_FONT_TITLE_ZH: options.font_title_zh = std::move(spec); break;
+            case OPT_FONT_TITLE_EN: options.font_title_en = std::move(spec); break;
+            }
+            break;
+        }
+        case OPT_COVER_TITLE:
+        {
+            const std::string t = optarg;
+            if (t.empty() || t[0] == '-')
+            {
+                printError("参数 '--set-cover-title' 后缺少标题文字；"
+                           "正确用法：--set-cover-title <封面标题>");
+                return 1;
+            }
+            options.cover_title = t;
+            break;
+        }
         case 'h':
             options.help = true;
             break;
-        default: // getopt_long 已输出具体错误信息
+        case '?':
+        {
+            // 未知参数：提示程序没有此参数，并提示使用 -h, --help 查看帮助
+            const char *token = (optind > 0 && optind <= argc) ? argv[optind - 1] : "";
+            printError("未知参数 '" + std::string(token) + "'（程序没有此参数），"
+                       "请使用 -h, --help 查看帮助信息");
+            return 1;
+        }
+        case ':':
+        {
+            // 选项后缺少必要的参数值
+            const std::string token = (optind > 0 && optind <= argc) ? argv[optind - 1] : "";
+            const std::string hint = option_argument_hint(token);
+            if (!hint.empty())
+                printError("参数 '" + token + "' 后缺少必要的参数值；正确用法：" +
+                           token + " <" + hint + ">");
+            else
+                printError("参数 '" + token + "' 后缺少必要的参数值；"
+                           "请使用 -h, --help 查看帮助信息");
+            return 1;
+        }
+        default:
             printUsage();
             return 1;
         }
@@ -303,6 +604,30 @@ int main(int argc, char *argv[])
     {
         printError("option --show is only supported with -M; -L always hides difficulty and tags");
         return 1;
+    }
+
+    // 仅 -L 支持的参数与 -M 一起使用属于参数填用错误：拒绝执行并提示正确用法
+    if (options.markdown && !options.latex)
+    {
+        std::vector<std::string> latex_only;
+        if (options.no_toc_links) latex_only.push_back("--no-toc-links");
+        if (options.toc_backlinks) latex_only.push_back("--toc-backlinks");
+        if (!options.font_cover.empty()) latex_only.push_back("--set-font-cover-page");
+        if (!options.font_body_zh.empty()) latex_only.push_back("--set-font-body-zh-CN");
+        if (!options.font_body_en.empty()) latex_only.push_back("--set-font-body-en-US");
+        if (!options.font_body_codes.empty()) latex_only.push_back("--set-font-body-codes");
+        if (!options.font_title_zh.empty()) latex_only.push_back("--set-font-title-zh-CN");
+        if (!options.font_title_en.empty()) latex_only.push_back("--set-font-title-en-US");
+        if (options.no_bilibili_link) latex_only.push_back("--no-bilibili-link");
+        if (!latex_only.empty())
+        {
+            std::string joined;
+            for (size_t i = 0; i < latex_only.size(); ++i)
+                joined += (i ? "、" : "") + latex_only[i];
+            printError("参数 " + joined + " 仅在使用 -L（导出 LaTeX）时支持；"
+                       "请移除上述参数，或在命令行中加入 -L 导出 LaTeX");
+            return 1;
+        }
     }
 
     if (optind < argc)
@@ -344,10 +669,12 @@ int main(int argc, char *argv[])
 
     if (options.markdown)
     {
-        const std::string out_path = options.output.empty() ? "problems.md" : options.output;
+        // 输出路径按 UTF-8 构造 filesystem::path（Windows 下中文路径可用）
+        const std::filesystem::path out_path = luogu::compat::path_from_utf8(
+            options.output.empty() ? "problems.md" : options.output);
         std::string error;
-        if (markdown::export_markdown(options.filter, out_path, error))
-            printSuccess("Exported matching problems to '" + out_path + "'");
+        if (markdown::export_markdown(options.filter, out_path, error, options.cover_title))
+            printSuccess("Exported matching problems to '" + out_path.string() + "'");
         else
         {
             printError(error);
@@ -356,9 +683,26 @@ int main(int argc, char *argv[])
     }
     else if (options.latex)
     {
-        const std::string out_path = options.output.empty() ? "problems.tex" : options.output;
+        // 输出路径按 UTF-8 构造 filesystem::path（Windows 下中文路径可用）
+        const std::filesystem::path out_path = luogu::compat::path_from_utf8(
+            options.output.empty() ? "problems.tex" : options.output);
+
+        // 组装 LaTeX 显示选项
+        latex::Options latex_opt;
+        latex_opt.lang = options.filter.lang;
+        latex_opt.toc_links = !options.no_toc_links;
+        latex_opt.toc_backlinks = options.toc_backlinks;
+        latex_opt.bilibili_links = !options.no_bilibili_link;
+        latex_opt.font_cover = options.font_cover;
+        latex_opt.font_body_zh = options.font_body_zh;
+        latex_opt.font_body_en = options.font_body_en;
+        latex_opt.font_code = options.font_body_codes;
+        latex_opt.font_title_zh = options.font_title_zh;
+        latex_opt.font_title_en = options.font_title_en;
+        latex_opt.cover_title = options.cover_title;
+
         std::string error;
-        if (!latex::export_latex(options.filter, out_path, error))
+        if (!latex::export_latex(options.filter, out_path, error, latex_opt))
         {
             printError(error);
             result = 1;

@@ -13,6 +13,7 @@
 #include <nlohmann/json.hpp>
 #include "luogu-export/crawler/crawler.h"
 #include "luogu-export/export/common.h"
+#include "luogu-export/util/compat.h"
 #include "luogu-export/util/problem_info.h"
 #include "luogu-export/util/tag_cache.h"
 
@@ -620,7 +621,7 @@ bool luogu::select_problems(const ExportFilter &filter,
 
     // 3. 打开题目缓存
     std::filesystem::path ndjson_path = crawler::get_cache_dir() / "latest.ndjson";
-    FILE *in = std::fopen(ndjson_path.c_str(), "rb");
+    FILE *in = luogu::compat::fopen(ndjson_path, "rb");
     if (!in)
     {
         error = "找不到题目缓存 '" + ndjson_path.string() + "'，请先运行 -U 更新缓存";
@@ -641,19 +642,16 @@ bool luogu::select_problems(const ExportFilter &filter,
                                      : -1L);
     }
 
-    char *line_buf = nullptr;
-    size_t line_cap = 0;
-    long line_len = 0;
-    while ((line_len = getline(&line_buf, &line_cap, in)) != -1)
+    // 用跨平台 read_line 替代 POSIX getline（MSVC 没有 getline），
+    // 语义一致：读入一行（不含末尾换行），EOF 且无内容时返回 -1
+    std::string line;
+    while (luogu::compat::read_line(in, line) >= 0)
     {
-        size_t content_len = static_cast<size_t>(line_len);
-        if (content_len > 0 && line_buf[content_len - 1] == '\n')
-            --content_len;
-        if (content_len == 0)
+        if (line.empty())
             continue;
 
         // 快速预筛：原始文本上就确定不可能命中的行，跳过 JSON 解析
-        if (!raw_may_match(std::string_view(line_buf, content_len),
+        if (!raw_may_match(std::string_view(line),
                            filter.difficulties, filter_tags, filter_tag_ids,
                            filter.types))
             continue;
@@ -661,7 +659,7 @@ bool luogu::select_problems(const ExportFilter &filter,
         json data;
         try
         {
-            data = json::parse(line_buf, line_buf + content_len);
+            data = json::parse(line);
         }
         catch (...)
         {
@@ -722,7 +720,6 @@ bool luogu::select_problems(const ExportFilter &filter,
             continue; // 字段类型异常时跳过该题
         }
     }
-    std::free(line_buf);
     std::fclose(in);
 
     // 5. 校验 --tag 名称确实存在于缓存中

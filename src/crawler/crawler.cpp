@@ -3,6 +3,7 @@
 #include <functional>
 #include <cctype>
 #include <chrono>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <random>
@@ -19,6 +20,7 @@
 #include <utility>
 #include <nlohmann/json.hpp>
 #include "luogu-export/crawler/crawler.h"
+#include "luogu-export/util/compat.h"
 
 using nlohmann::json;
 
@@ -113,7 +115,7 @@ void random_delay()
 // 校验文件是否真的是图片（按文件头魔数判断 PNG/JPEG/GIF/WebP/BMP/SVG）
 bool looks_like_image_file(const std::filesystem::path &path)
 {
-    FILE *in = std::fopen(path.c_str(), "rb");
+    FILE *in = luogu::compat::fopen(path, "rb");
     if (!in)
         return false;
     unsigned char head[12] = {0};
@@ -138,17 +140,17 @@ bool looks_like_image_file(const std::filesystem::path &path)
 }
 } // namespace
 
-static bool decompress_gzip_file(const std::string &input_path, const std::string &output_path)
+static bool decompress_gzip_file(const std::filesystem::path &input_path,
+                                 const std::filesystem::path &output_path)
 {
-    gzFile in = gzopen(input_path.c_str(), "rb");
+    gzFile in = luogu::compat::gzopen(input_path, "rb");
     if (!in)
         return false;
 
-    std::filesystem::path output(output_path);
-    if (!output.parent_path().empty())
+    if (!output_path.parent_path().empty())
     {
         std::error_code ec;
-        std::filesystem::create_directories(output.parent_path(), ec);
+        std::filesystem::create_directories(output_path.parent_path(), ec);
         if (ec)
         {
             gzclose(in);
@@ -156,7 +158,7 @@ static bool decompress_gzip_file(const std::string &input_path, const std::strin
         }
     }
 
-    FILE *out = std::fopen(output_path.c_str(), "wb");
+    FILE *out = luogu::compat::fopen(output_path, "wb");
     if (!out)
     {
         gzclose(in);
@@ -248,17 +250,22 @@ int progress_callback(void *clientp, curl_off_t dltotal, curl_off_t dlnow,
 
 std::filesystem::path crawler::get_cache_dir()
 {
-    if (const char *xdg_cache_home = std::getenv("XDG_CACHE_HOME"))
-    {
-        if (xdg_cache_home && *xdg_cache_home)
-            return std::filesystem::path(xdg_cache_home) / "luogu-export";
-    }
+    // 环境变量一律按 UTF-8 读取：Windows 下 CRT 的 getenv 按 ANSI 代码页
+    // 解释，含中文用户名等的路径会被破坏
+    const std::string xdg_cache_home = luogu::compat::getenv_utf8("XDG_CACHE_HOME");
+    if (!xdg_cache_home.empty())
+        return luogu::compat::path_from_utf8(xdg_cache_home) / "luogu-export";
 
-    if (const char *home_env = std::getenv("HOME"))
-    {
-        if (home_env && *home_env)
-            return std::filesystem::path(home_env) / ".cache" / "luogu-export";
-    }
+    const std::string home_env = luogu::compat::getenv_utf8("HOME");
+    if (!home_env.empty())
+        return luogu::compat::path_from_utf8(home_env) / ".cache" / "luogu-export";
+
+#ifdef _WIN32
+    // Windows 下按惯例使用 %LOCALAPPDATA% 作为用户缓存根目录
+    const std::string local_app_data = luogu::compat::getenv_utf8("LOCALAPPDATA");
+    if (!local_app_data.empty())
+        return luogu::compat::path_from_utf8(local_app_data) / "luogu-export";
+#endif
 
     std::error_code ec;
     std::filesystem::path temp_dir = std::filesystem::temp_directory_path(ec);
@@ -310,11 +317,11 @@ std::string crawler::get_html(const std::string &url, derror *error)
     return res;
 }
 
-crawler::derror crawler::downloadFile(const std::string &url, const std::string &fpath,
+crawler::derror crawler::downloadFile(const std::string &url,
+                                      const std::filesystem::path &fpath,
                                       const crawler::download_progress_callback &progress)
 {
-    std::filesystem::path path(fpath);
-    std::filesystem::path parent = path.parent_path();
+    const std::filesystem::path parent = fpath.parent_path();
     if (!parent.empty())
     {
         std::error_code ec;
@@ -326,10 +333,10 @@ crawler::derror crawler::downloadFile(const std::string &url, const std::string 
         }
     }
 
-    FILE *out_file = std::fopen(fpath.c_str(), "wb");
+    FILE *out_file = luogu::compat::fopen(fpath, "wb");
     if (!out_file)
     {
-        print_error("Failed to open file '" + fpath + "' for writing");
+        print_error("Failed to open file '" + fpath.string() + "' for writing");
         return CANT_CREAT_FILE;
     }
 
@@ -516,7 +523,7 @@ crawler::derror crawler::update_tags()
         }
 
         std::filesystem::path save_path = cache_dir / "tags.json";
-        FILE *out = std::fopen(save_path.c_str(), "w");
+        FILE *out = luogu::compat::fopen(save_path, "w");
         if (!out)
         {
             print_error("Failed to open '" + save_path.string() + "' for writing");
@@ -607,7 +614,7 @@ crawler::derror crawler::download_images(const std::vector<std::string> &urls)
 
                 auto download_one = [&] {
                     // 图片下载不显示进度条（可自定义回调）
-                    const derror result = downloadFile(url, save_path.string(),
+                    const derror result = downloadFile(url, save_path,
                                                        [](const std::string &, long long, long long) {});
                     if (result != SUCCESS)
                     {
@@ -682,7 +689,7 @@ crawler::derror crawler::update()
     std::filesystem::path save_path = cache_dir / "latest.ndjson.gz";
     std::filesystem::path extract_path = cache_dir / "latest.ndjson";
     printf("Downloading problems: ");
-    derror result = downloadFile(url, save_path.string());
+    derror result = downloadFile(url, save_path);
     printf("\n");
 
     if (result != SUCCESS)
@@ -691,7 +698,7 @@ crawler::derror crawler::update()
         return result;
     }
 
-    if (!decompress_gzip_file(save_path.string(), extract_path.string()))
+    if (!decompress_gzip_file(save_path, extract_path))
     {
         print_error("Failed to decompress the downloaded file '" + save_path.string() + "'");
         return DECOMPRESS_ERROR;

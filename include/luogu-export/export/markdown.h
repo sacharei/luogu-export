@@ -12,9 +12,12 @@ namespace markdown
     // @param filter      筛选条件（与 -L 共用）
     // @param output_path 输出文件路径
     // @param error       失败时返回的错误信息
+    // @param cover_title 一级标题文字（--set-cover-title；空串表示默认“洛谷题目导出”）
     // @return 成功返回 true
     bool export_markdown(const luogu::ExportFilter &filter,
-                         const std::filesystem::path &output_path, std::string &error);
+                         const std::filesystem::path &output_path,
+                         std::string &error,
+                         const std::string &cover_title = "");
 }
 
 #endif // LUOGU_EXPORT_MARKDOWN_H

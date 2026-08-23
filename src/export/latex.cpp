@@ -13,6 +13,7 @@
 #include "luogu-export/crawler/crawler.h"
 #include "luogu-export/export/common.h"
 #include "luogu-export/export/latex.h"
+#include "luogu-export/util/compat.h"
 #include "luogu-export/util/problem_info.h"
 
 namespace
@@ -1652,7 +1653,7 @@ enum class ImageKind
 
 ImageKind detect_image_kind(const std::filesystem::path &path)
 {
-    FILE *in = std::fopen(path.c_str(), "rb");
+    FILE *in = luogu::compat::fopen(path, "rb");
     if (!in)
         return ImageKind::kUnknown;
     unsigned char head[16] = {0};
@@ -1690,7 +1691,7 @@ ImageKind detect_image_kind(const std::filesystem::path &path)
 // 返回 true 表示无需修正或已修正；若需要修正但缓存不可写则返回 false。
 bool fix_jpeg_density(const std::filesystem::path &path)
 {
-    FILE *in = std::fopen(path.c_str(), "r+b");
+    FILE *in = luogu::compat::fopen(path, "r+b");
     if (!in)
         return false;
 
@@ -1801,6 +1802,24 @@ std::string regex_transform(const std::string &s, const std::regex &re,
 std::string inline_to_latex(const std::string &text);
 std::string inline_to_latex_impl(const std::string &text, std::vector<std::string> &raws,
                                  std::vector<bool> &is_math);
+
+// 当前导出过程的 LaTeX 显示选项。仅 export_latex 通过 OptionsGuard 设置；
+// 行内转换（如 bilibili 视频 URL 是否输出为超链接）据此判断。
+// 指针为空时按默认行为处理（与未传入任何新参数时一致）。
+const latex::Options *g_options = nullptr;
+
+// RAII 守卫：进入 export_latex 时挂上选项，离开（含提前返回）时自动还原
+struct OptionsGuard
+{
+    const latex::Options *previous;
+    explicit OptionsGuard(const latex::Options *opt) : previous(g_options)
+    {
+        g_options = opt;
+    }
+    ~OptionsGuard() { g_options = previous; }
+    OptionsGuard(const OptionsGuard &) = delete;
+    OptionsGuard &operator=(const OptionsGuard &) = delete;
+};
 
 // 占位符：\x01R<n>\x02（注意用字符串拼接构造，避免 \x01R 被当作十六进制转义）
 std::string placeholder(size_t index)
@@ -1980,7 +1999,12 @@ std::string inline_to_latex_impl(const std::string &text, std::vector<std::strin
             if (!looks_like_url(link_url) || !looks_like_url(img_url))
                 return m[0].str();
             if (is_video_url(link_url) || is_video_url(img_url))
+            {
+                // --no-bilibili-link：视频 URL 输出为普通文本而非超链接
+                if (g_options && !g_options->bilibili_links)
+                    return protect(escape_latex(link_url));
                 return protect("\\url{" + link_url + "}");
+            }
             // 按缓存文件真实内容判断能否加载，扩展名与内容不符的图片
             // 先经 prepare_cached_image 归一化（修正密度/补扩展名）
             const std::filesystem::path usable =
@@ -2007,7 +2031,12 @@ std::string inline_to_latex_impl(const std::string &text, std::vector<std::strin
             if (!looks_like_url(url))
                 return m[0].str(); // 不是真正的图片链接，保留原文（转义阶段处理）
             if (is_video_url(url))
+            {
+                // --no-bilibili-link：视频 URL 输出为普通文本而非超链接
+                if (g_options && !g_options->bilibili_links)
+                    return protect(escape_latex(url));
                 return protect("\\url{" + url + "}");
+            }
             // 按缓存文件真实内容判断能否加载：GIF/WebP/SVG/BMP/ICO 等
             // xelatex 无法加载的格式直接跳过；扩展名与内容不符的图片
             // 先经 prepare_cached_image 归一化（修正密度/补扩展名）
@@ -2032,6 +2061,9 @@ std::string inline_to_latex_impl(const std::string &text, std::vector<std::strin
                 return m[1].str(); // data URI 链接：只保留链接文字
             if (!looks_like_url(m[2].str()))
                 return m[0].str(); // 不是真正的链接目标，保留原文（转义阶段处理）
+            // --no-bilibili-link：链接目标是 bilibili 视频 URL 时只保留链接文字
+            if (g_options && !g_options->bilibili_links && is_video_url(m[2].str()))
+                return protect(inline_to_latex_impl(m[1].str(), raws, is_math));
             return protect("\\href{" + escape_latex(m[2].str()) + "}{" +
                            inline_to_latex_impl(m[1].str(), raws, is_math) + "}");
         });
@@ -2040,6 +2072,9 @@ std::string inline_to_latex_impl(const std::string &text, std::vector<std::strin
     {
         static const std::regex re("<(https?://[^>]+)>");
         s = regex_transform(s, re, [&](const std::smatch &m) {
+            // --no-bilibili-link：视频 URL 输出为普通文本而非超链接
+            if (g_options && !g_options->bilibili_links && is_video_url(m[1].str()))
+                return protect(escape_latex(m[1].str()));
             return protect("\\url{" + m[1].str() + "}");
         });
     }
@@ -2960,9 +2995,14 @@ std::string latex::article_to_latex(const article::Article &a)
 
 bool latex::export_latex(const luogu::ExportFilter &filter,
                          const std::filesystem::path &output_path,
-                         std::string &error)
+                         std::string &error,
+                         const Options &opt)
 {
     error.clear();
+
+    // 挂上本次导出的显示选项：行内转换（如 bilibili 链接）据此判断，
+    // 函数返回（含提前返回）时自动还原
+    OptionsGuard options_guard(&opt);
 
     // 筛选（-M / -L 共用），结果已按题号排序
     std::vector<problem::Problem> problems;
@@ -3001,11 +3041,11 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
         }
     }
 
-    Options opt;
-    opt.lang = filter.lang;
-    // opt.show 保持默认 "00"：-L 不再支持 --show，默认不显示难度和标签
+    Options opt_lang;
+    opt_lang.lang = filter.lang;
+    // opt_lang.show 保持默认 "00"：-L 不再支持 --show，默认不显示难度和标签
 
-    FILE *out = std::fopen(output_path.c_str(), "w");
+    FILE *out = luogu::compat::fopen(output_path, "w");
     if (!out)
     {
         error = "无法打开输出文件 '" + output_path.string() + "'";
@@ -3017,7 +3057,11 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
     std::fputs("\\usepackage{graphicx}\n", out);
     std::fputs("\\usepackage{titlesec}\n", out);
     std::fputs("\\usepackage{fancyhdr}\n", out);
-    std::fputs("\\usepackage[hidelinks]{hyperref}\n", out);
+    // --no-toc-links：目录条目不带跳转到题目的超链接（默认带超链接）
+    if (opt.toc_links)
+        std::fputs("\\usepackage[hidelinks]{hyperref}\n", out);
+    else
+        std::fputs("\\usepackage[linktoc=none,hidelinks]{hyperref}\n", out);
     std::fputs("\\usepackage[normalem]{ulem}\n", out);
     std::fputs("\\usepackage{amsmath,amssymb}\n", out);
     std::fputs("\\usepackage{mathtools}\n", out);
@@ -3032,25 +3076,39 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
         // 去掉所有章节序号（\section 等）：目录和正文都不显示数字
     std::fputs("\\setcounter{secnumdepth}{-1}\n", out);
 
+    // 页眉：--toc-backlinks 时页码为跳回目录页的超链接（默认页码为普通文本）
+    const std::string page_in_head =
+        opt.toc_backlinks ? "\\hyperlink{luogotoc}{\\thepage}" : "\\thepage";
+    // 标题字体（--set-font-title-zh-CN / --set-font-title-en-US）同样作用于
+    // 页眉处的题目标题；未设置时保持原来的 \normalfont
+    std::string head_fonts = "\\normalfont";
+    if (!opt.font_title_zh.empty())
+        head_fonts += " \\luogotitlezh";
+    if (!opt.font_title_en.empty())
+        head_fonts += " \\luogotitleen";
+
     std::fputs("\\pagestyle{fancy}\n", out);
     std::fputs("\\fancyhf{}\n", out);
-    std::fputs("\\fancyhead[LE]{\\thepage}\n", out);
-    std::fputs("\\fancyhead[RE]{\\nouppercase{\\normalfont \\rightmark}}\n", out);
-    std::fputs("\\fancyhead[LO]{\\nouppercase{\\normalfont \\rightmark}}\n", out);
-    std::fputs("\\fancyhead[RO]{\\thepage}\n", out);
+    std::fprintf(out, "\\fancyhead[LE]{%s}\n", page_in_head.c_str());
+    std::fprintf(out, "\\fancyhead[RE]{\\nouppercase{%s \\rightmark}}\n", head_fonts.c_str());
+    std::fprintf(out, "\\fancyhead[LO]{\\nouppercase{%s \\rightmark}}\n", head_fonts.c_str());
+    std::fprintf(out, "\\fancyhead[RO]{%s}\n", page_in_head.c_str());
 
-    std::fputs("\\titleformat{\\section}\n", out);
-    std::fputs("{\\ttfamily\\Large}\n", out);
-    std::fputs("{}\n", out);
-    std::fputs("{0em}{}\n", out);
-    std::fputs("\\titleformat{\\subsection}\n", out);
-    std::fputs("{\\ttfamily\\large}\n", out);
-    std::fputs("{}\n", out);
-    std::fputs("{0em}{}\n", out);
-    std::fputs("\\titleformat{\\subsubsection}\n", out);
-    std::fputs("{\\ttfamily\\color{gray}}\n", out);
-    std::fputs("{}\n", out);
-    std::fputs("{1em}{}\n", out);
+    // 标题字体：--set-font-title-zh-CN / --set-font-title-en-US 同时作用于
+    // 正文页的标题、目录页的标题与页眉处的标题。
+    // 中文字体开关（\newCJKfontfamily 定义）与西文字体开关相互独立：
+    // 未设置中文字体时保持原来的 CJK 字体；未设置西文字体时保持原来的 \ttfamily。
+    std::string title_font_zh =
+        opt.font_title_zh.empty() ? "" : "\\luogotitlezh";
+    std::string title_font_en =
+        opt.font_title_en.empty() ? "\\ttfamily" : "\\luogotitleen";
+
+    std::fprintf(out, "\\titleformat{\\section}\n{%s%s\\Large}\n{}\n{0em}{}\n",
+                 title_font_zh.c_str(), title_font_en.c_str());
+    std::fprintf(out, "\\titleformat{\\subsection}\n{%s%s\\large}\n{}\n{0em}{}\n",
+                 title_font_zh.c_str(), title_font_en.c_str());
+    std::fprintf(out, "\\titleformat{\\subsubsection}\n{%s%s\\color{gray}}\n{}\n{1em}{}\n",
+                 title_font_zh.c_str(), title_font_en.c_str());
 
     std::fputs("\\lstset{\n", out);
     std::fputs("    breaklines=true,\n", out);
@@ -3213,22 +3271,147 @@ bool latex::export_latex(const luogu::ExportFilter &filter,
     std::fputs("morestring=[b]',\n", out);
     std::fputs("morestring=[b]\"\n", out);
     std::fputs("}\n", out);
-    std::fputs("\\title{luogu export}\n\\author{luogu-export}\n\\date{\\today}\n", out);
+    // 封面标题：--set-cover-title 指定文字，--set-font-cover-page 指定字体
+    // （未设置字体时保持原代码行为：不额外指定字体族）
+    {
+        const std::string cover = opt.cover_title.empty() ? "luogu export" : opt.cover_title;
+        std::string cover_latex = escape_latex(cover);
+        if (!opt.font_cover.empty())
+            cover_latex = "{\\luogocoverfont " + cover_latex + "}";
+        std::fprintf(out, "\\title{%s}\n\\author{luogu-export}\n\\date{\\today}\n",
+                     cover_latex.c_str());
+    }
 
-    std::fputs("\\setmonofont{Consolas}\n", out);
+    // 字体设置：参数值已在 main 中规范化（字体文件地址转绝对路径并补全扩展名），
+    // 这里渲染成 fontspec 可接受的写法。
+    // - 字体名称：直接放在花括号里（转义 TeX 特殊字符；下划线按字面保留，
+    //   fontspec 按字面处理）；
+    // - 字体文件地址（含 '/'）：拆成 Path= + Extension= + 文件名三段，
+    //   这是 fontspec 加载字体文件最稳妥的写法（直接把绝对路径放进
+    //   花括号在新版 fontspec 中会解析失败）。
+    // 未设置时保持原代码中的字体：
+    //   正文中文 → ctex 默认；正文西文 → 默认（Latin Modern）；
+    //   代码块   → Consolas；标题/封面 → 不额外指定字体族。
+    auto font_arg = [](const std::string &s) {
+        auto esc = [](const std::string &t) {
+            std::string out;
+            out.reserve(t.size());
+            for (char c : t)
+            {
+                switch (c)
+                {
+                case '{': out += "\\{"; break;
+                case '}': out += "\\}"; break;
+                case '#': out += "\\#"; break;
+                case '%': out += "\\%"; break;
+                case '&': out += "\\&"; break;
+                case '^': out += "\\textasciicircum{}"; break;
+                case '~': out += "\\textasciitilde{}"; break;
+                case '$': out += "\\$"; break;
+                default: out += c;
+                }
+            }
+            return out;
+        };
+        std::string t = s;
+        std::replace(t.begin(), t.end(), '\\', '/');
+        if (t.find('/') == std::string::npos)
+            return "{" + esc(t) + "}"; // 字体名称
+        const std::filesystem::path p(t);
+        std::string dir = p.parent_path().string();
+        if (dir.empty())
+            dir = ".";
+        if (dir.back() != '/')
+            dir += "/";
+        std::string base = p.filename().string();
+        const std::string ext = p.extension().string();
+        if (ext.empty())
+            return "[Path={" + esc(dir) + "}]{./" + esc(base) + "}";
+        base = base.substr(0, base.size() - ext.size());
+        return "[Path={" + esc(dir) + "},Extension=" + esc(ext) + "]{" + esc(base) + "}";
+    };
+
+    if (!opt.font_body_en.empty())
+        std::fprintf(out, "\\setmainfont%s\n", font_arg(opt.font_body_en).c_str());
+    if (!opt.font_body_zh.empty())
+        std::fprintf(out, "\\setCJKmainfont%s\n", font_arg(opt.font_body_zh).c_str());
+    // 代码块字体（\ttfamily 族）：默认 Consolas，与原代码一致
+    std::fprintf(out, "\\setmonofont%s\n",
+                 opt.font_code.empty() ? "{Consolas}" : font_arg(opt.font_code).c_str());
     std::fputs("\\setCJKmonofont{SimHei}\n", out);
-    std::fputs("\\newfontfamily{\\tagsfonts}{Noto Sans}[Script = CJK, CJKFont = WenQuanYi Micro Hei]\n", out);
+    // 标签徽章字体：按操作系统选择默认字体——Windows / macOS 用思源黑体
+    // （Noto Sans CJK SC），Linux 用文泉驿微米黑（WenQuanYi Micro Hei）。
+    // 西文字体族与 CJK 字体族是两套独立机制，须分别定义再合成一个开关；
+    // 原代码在 \newfontfamily 里直接带 CJKFont= 键——该键属 xeCJK，新版
+    // fontspec 会报 "key 'fontspec-opentype/CJKFont' is unknown"。
+    // 用 \IfFontExistsTF 在编译期检测字体是否安装：未安装时回退到正文
+    // 字体（不切换任何字体族），避免编译报错。
+#if defined(_WIN32) || defined(__APPLE__)
+    const char *kTagBadgeFont = "Noto Sans CJK SC";
+#else
+    const char *kTagBadgeFont = "WenQuanYi Micro Hei";
+#endif
+    std::fprintf(out,
+                 "\\IfFontExistsTF{%s}\n"
+                 "  {\\newfontfamily{\\tagsfontswestern}{%s}%%\n"
+                 "   \\newCJKfontfamily{\\tagsfontscjk}{%s}}\n"
+                 "  {\\let\\tagsfontswestern\\relax\\let\\tagsfontscjk\\relax}\n"
+                 "\\newcommand{\\tagsfonts}{\\tagsfontswestern\\tagsfontscjk}\n",
+                 kTagBadgeFont, kTagBadgeFont, kTagBadgeFont);
+    if (!opt.font_cover.empty())
+        std::fprintf(out, "\\newfontfamily{\\luogocoverfont}%s\n",
+                     font_arg(opt.font_cover).c_str());
+    if (!opt.font_title_zh.empty())
+        std::fprintf(out, "\\newCJKfontfamily{\\luogotitlezh}%s\n",
+                     font_arg(opt.font_title_zh).c_str());
+    if (!opt.font_title_en.empty())
+        std::fprintf(out, "\\newfontfamily{\\luogotitleen}%s\n",
+                     font_arg(opt.font_title_en).c_str());
 
     std::fputs("\\begin{document}\n\n", out);
     std::fputs("\\maketitle\n", out);
-    std::fputs("\\tableofcontents\n", out);
+
+    // 目录：设置标题字体时，目录页中的题目标题同样使用对应字体
+    std::string toc_open, toc_close;
+    if (!opt.font_title_zh.empty() || !opt.font_title_en.empty())
+    {
+        toc_open = "{";
+        if (!opt.font_title_zh.empty())
+            toc_open += "\\luogotitlezh";
+        if (!opt.font_title_en.empty())
+            toc_open += "\\luogotitleen";
+        toc_close = "}";
+    }
+
+    if (!opt.toc_backlinks)
+    {
+        // 默认：\tableofcontents（目录条目是否带超链接由 hyperref 的
+        // linktoc 选项控制，对应 --no-toc-links）
+        std::fputs((toc_open + "\n\\tableofcontents\n" + toc_close + "\n").c_str(), out);
+    }
+    else
+    {
+        // --toc-backlinks：页眉页码需要跳回目录页。把 \tableofcontents 拆成
+        // “章标题 + \@starttoc”，并在目录标题正下方放置锚点 \label{luogotoc}，
+        // 点击页眉页码即跳到目录页顶端；\pdfbookmark 保持 PDF 书签中的
+        // “目录”项与 \tableofcontents 行为一致。
+        std::fputs((toc_open + "\n").c_str(), out);
+        std::fputs("\\pdfbookmark[0]{\\contentsname}{toc}\n", out);
+        std::fputs("\\chapter*{\\contentsname}\n", out);
+        std::fputs("\\phantomsection\n", out);
+        std::fputs("\\label{luogotoc}\n", out);
+        std::fputs("\\makeatletter\n", out);
+        std::fputs("\\@starttoc{toc}\n", out);
+        std::fputs("\\makeatother\n", out);
+        std::fputs((toc_close + "\n").c_str(), out);
+    }
     std::fputs("\\newpage\n", out);
 
     std::fputs("\n\n", out);
     int cnt = 0, total = static_cast<int>(problems.size());
     for (const auto &p : problems)
     {
-        std::fputs(problem_to_latex(p, opt).c_str(), out);
+        std::fputs(problem_to_latex(p, opt_lang).c_str(), out);
         std::fputs("\n", out);
         cnt++;
         std::printf("\rExporting: %3d %% (%d/%d). ", cnt * 100 / total, cnt, total);

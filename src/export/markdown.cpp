@@ -7,6 +7,7 @@
 #include "luogu-export/contents/problem.h"
 #include "luogu-export/export/common.h"
 #include "luogu-export/export/markdown.h"
+#include "luogu-export/util/compat.h"
 #include "luogu-export/util/problem_info.h"
 
 using nlohmann::json;
@@ -38,7 +39,8 @@ std::string safe_string(const json &j, const char *key)
 
 bool markdown::export_markdown(const luogu::ExportFilter &filter,
                                const std::filesystem::path &output_path,
-                               std::string &error)
+                               std::string &error,
+                               const std::string &cover_title)
 {
     error.clear();
 
@@ -53,15 +55,17 @@ bool markdown::export_markdown(const luogu::ExportFilter &filter,
     const bool show_tags = (filter.show.size() >= 2 && filter.show[1] == '1');
     const bool use_en = (filter.lang == "en");
 
-    // 写出 markdown 文件
-    FILE *out = std::fopen(output_path.c_str(), "w");
+    // 写出 markdown 文件（UTF-8 路径，Windows 下中文路径可用）
+    FILE *out = luogu::compat::fopen(output_path, "w");
     if (!out)
     {
         error = "无法打开输出文件 '" + output_path.string() + "'";
         return false;
     }
 
-    std::fprintf(out, "# 洛谷题目导出（共 %zu 道题）\n\n", problems.size());
+    // 一级标题：--set-cover-title 指定时使用指定标题，否则用默认标题
+    const std::string cover = cover_title.empty() ? "洛谷题目导出" : cover_title;
+    std::fprintf(out, "# %s（共 %zu 道题）\n\n", cover.c_str(), problems.size());
 
     const std::string conds = luogu::describe_filter(filter, resolved_tags);
     std::fputs("筛选条件：", out);

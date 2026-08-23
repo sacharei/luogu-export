@@ -31,10 +31,10 @@ namespace crawler
                                                          long long total)>;
 
     /// @param url      下载地址
-    /// @param fpath    保存路径
+    /// @param fpath    保存路径（Windows 下按 UTF-8/宽字符处理，中文路径可用）
     /// @param progress 可选进度回调；不传时使用默认的百分比进度显示
     /// @return SUCCESS 或对应错误码
-    derror downloadFile(const std::string &url, const std::string &fpath,
+    derror downloadFile(const std::string &url, const std::filesystem::path &fpath,
                         const download_progress_callback &progress = nullptr);
 
     /// @param p 题目编号
