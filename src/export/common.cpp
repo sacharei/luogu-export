@@ -429,20 +429,27 @@ int json_string_token_match(std::string_view raw, const std::string &name)
     return decoded == name ? 1 : 0;
 }
 
-// 检查整行里是否存在包含全部 filter_tags 的 "tags" 数组。
+// 检查整行里是否存在包含 filter_tags 的 "tags" 数组。
 // 每个标签在数组里以“名字字符串”（去 BOM 后比较）或“数字 ID”任一种形式
 // 出现都算命中；返回 false 表示确定不命中，true 表示可能命中或无法可靠判断。
-bool raw_tags_match(std::string_view line,
-                    const std::vector<std::string> &names,
-                    const std::vector<long> &ids)
+// 实现上抽取一个共享的扫描函数：返回“已确认出现的名字位掩码”，
+// 遇到无法可靠判断的输入时通过 may_any 置位表示“可能命中”（保守放行）。
+struct TagScanResult
 {
-    if (names.empty())
-        return true;
-    if (names.size() > 64)
-        return true; // 数量过多时保守处理，直接完整解析
-    const uint64_t need = (names.size() == 64)
-                              ? ~uint64_t{0}
-                              : ((uint64_t{1} << names.size()) - 1);
+    bool may_any = false; // 输入无法可靠判断（未闭合数组/含未知转义等）→ 保守视为可能命中
+    uint64_t found = 0;   // 已确认出现的名字位掩码
+};
+
+TagScanResult raw_tags_scan(std::string_view line,
+                            const std::vector<std::string> &names,
+                            const std::vector<long> &ids)
+{
+    TagScanResult res;
+    if (names.empty() || names.size() > 64)
+    {
+        res.may_any = true;
+        return res;
+    }
 
     constexpr size_t kKeyLen = 6; // "\"tags\""
     size_t pos = 0;
@@ -467,13 +474,15 @@ bool raw_tags_match(std::string_view line,
         }
         ++q; // 进入数组
 
-        uint64_t found = 0;
         while (q < line.size())
         {
             while (q < line.size() && is_json_ws(line[q]))
                 ++q;
             if (q >= line.size())
-                return true; // 数组未闭合，保守
+            {
+                res.may_any = true; // 数组未闭合，保守
+                return res;
+            }
             if (line[q] == ']')
                 break;
 
@@ -495,16 +504,22 @@ bool raw_tags_match(std::string_view line,
                     }
                 }
                 if (q >= line.size())
-                    return true; // 字符串未闭合，保守
+                {
+                    res.may_any = true; // 字符串未闭合，保守
+                    return res;
+                }
                 std::string_view tok = line.substr(tok_start, q - tok_start);
                 ++q;
                 for (size_t i = 0; i < names.size(); ++i)
                 {
                     const int m = json_string_token_match(tok, names[i]);
                     if (m == 1)
-                        found |= (uint64_t{1} << i);
+                        res.found |= (uint64_t{1} << i);
                     else if (m == -1)
-                        return true; // 无法可靠解码：保守交给完整解析
+                    {
+                        res.may_any = true; // 无法可靠解码：保守
+                        return res;
+                    }
                 }
             }
             else if (line[q] >= '0' && line[q] <= '9')
@@ -519,7 +534,7 @@ bool raw_tags_match(std::string_view line,
                 }
                 for (size_t i = 0; i < ids.size(); ++i)
                     if (ids[i] >= 0 && v == ids[i])
-                        found |= (uint64_t{1} << i);
+                        res.found |= (uint64_t{1} << i);
             }
             else
             {
@@ -529,13 +544,28 @@ bool raw_tags_match(std::string_view line,
             if (q < line.size() && line[q] == ',')
                 ++q;
         }
-        if (found == need)
-            return true;
         if (q < line.size() && line[q] == ']')
             ++q;
         pos = q; // 继续找其它 "tags" 键
     }
-    return false;
+    return res;
+}
+
+bool raw_tags_match(std::string_view line,
+                    const std::vector<std::string> &names,
+                    const std::vector<long> &ids)
+{
+    if (names.empty())
+        return true;
+    if (names.size() > 64)
+        return true; // 数量过多时保守处理，直接完整解析
+    const uint64_t need = (names.size() == 64)
+                              ? ~uint64_t{0}
+                              : ((uint64_t{1} << names.size()) - 1);
+    const TagScanResult res = raw_tags_scan(line, names, ids);
+    if (res.may_any)
+        return true;
+    return res.found == need;
 }
 
 // 综合预筛：难度、类型、标签任一条件在原始文本上就确定不满足时返回 false。
@@ -725,12 +755,79 @@ bool luogu::select_problems(const ExportFilter &filter,
     std::free(line_buf);
     std::fclose(in);
 
-    // 5. 校验 --tag 名称确实存在于缓存中
+    // 5. 校验 --tag 名称确实存在于缓存中。
+    //    注意：seen_tags 只收集了“通过预筛（难度/类型/标签）的行”里的标签，
+    //    当筛选组合本身没有命中任何题目时，seen_tags 会缺失这些标签，
+    //    但标签本身可能在缓存里是存在的 —— 此时不能误报“标签不存在”。
+    //    因此对未能在 seen_tags 中确认的标签，再依次检查：
+    //    官方标签表（tags.json）和整份题目缓存（一次原始文本扫描）。
     std::vector<std::string> not_found;
+    std::vector<std::string> verify_missing;
     for (const auto &wanted : filter_tags)
     {
-        if (!seen_tags.count(to_lower_ascii(wanted)))
-            not_found.push_back(wanted);
+        if (seen_tags.count(to_lower_ascii(wanted)))
+            continue;
+        verify_missing.push_back(wanted);
+    }
+    if (!verify_missing.empty())
+    {
+        // 2a. 官方标签表（tags.json）里有该名称即视为存在
+        std::vector<std::string> still_missing;
+        for (const auto &wanted : verify_missing)
+        {
+            if (tag_cache.name_to_id.find(wanted) != tag_cache.name_to_id.end())
+                continue;
+            still_missing.push_back(wanted);
+        }
+        // 2b. 整份题目缓存扫描：任一题目带该标签即视为存在
+        if (!still_missing.empty())
+        {
+            std::vector<long> check_ids;
+            check_ids.reserve(still_missing.size());
+            for (const auto &name : still_missing)
+            {
+                const auto it = tag_cache.name_to_id.find(name);
+                check_ids.push_back(it != tag_cache.name_to_id.end()
+                                        ? static_cast<long>(it->second)
+                                        : -1L);
+            }
+            const uint64_t need_all = (still_missing.size() == 64)
+                                          ? ~uint64_t{0}
+                                          : ((uint64_t{1} << still_missing.size()) - 1);
+            uint64_t found_any = 0;
+
+            FILE *scan_in = std::fopen(ndjson_path.c_str(), "rb");
+            if (scan_in)
+            {
+                char *scan_buf = nullptr;
+                size_t scan_cap = 0;
+                long scan_len = 0;
+                while ((scan_len = getline(&scan_buf, &scan_cap, scan_in)) != -1)
+                {
+                    size_t n = static_cast<size_t>(scan_len);
+                    if (n > 0 && scan_buf[n - 1] == '\n')
+                        --n;
+                    if (n == 0)
+                        continue;
+                    const TagScanResult r = raw_tags_scan(
+                        std::string_view(scan_buf, n), still_missing, check_ids);
+                    if (r.may_any)
+                    {
+                        found_any = need_all; // 无法可靠判断 → 全部视为存在
+                        break;
+                    }
+                    found_any |= r.found;
+                    if (found_any == need_all)
+                        break;
+                }
+                std::free(scan_buf);
+                std::fclose(scan_in);
+            }
+
+            for (size_t i = 0; i < still_missing.size(); ++i)
+                if (!(found_any & (uint64_t{1} << i)))
+                    not_found.push_back(still_missing[i]);
+        }
     }
     if (!not_found.empty())
     {
