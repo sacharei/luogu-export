@@ -43,7 +43,7 @@
 ## 构建
 
 ```bash
-git clone <此仓库地址>
+git clone https://github.com/sacharei/luogu-export.git
 cd luogu-export
 mkdir build && cd build
 cmake ..

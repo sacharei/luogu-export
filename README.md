@@ -46,7 +46,7 @@ These dependencies are automatically discovered and linked in [CMakeLists.txt](C
 ## Build
 
 ```bash
-git clone <this-repo>
+git clone https://github.com/sacharei/luogu-export.git
 cd luogu-export
 mkdir build && cd build
 cmake ..
