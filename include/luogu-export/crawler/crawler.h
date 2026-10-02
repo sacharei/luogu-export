@@ -1,4 +1,7 @@
 // include/luogu-export/crawler/crawler.h
+#ifndef LUOGU_EXPORT_CRAWLER_CRAWLER_H
+#define LUOGU_EXPORT_CRAWLER_CRAWLER_H
+
 #include <filesystem>
 #include <functional>
 #include <string>
@@ -71,3 +74,4 @@ namespace crawler
     /// @return SUCCESS 或对应错误码
     derror update();
 }
+#endif // LUOGU_EXPORT_CRAWLER_CRAWLER_H

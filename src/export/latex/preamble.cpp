@@ -1,0 +1,240 @@
+// src/export/latex/preamble.cpp
+#include "luogu-export/export/latex/preamble.h"
+
+namespace latex::detail
+{
+void write_preamble(FILE *out)
+{
+    std::fputs("\\documentclass{book}\n", out);
+    std::fputs("\\usepackage[UTF8]{ctex}\n", out);
+    std::fputs("\\usepackage{graphicx}\n", out);
+    std::fputs("\\usepackage{titlesec}\n", out);
+    std::fputs("\\usepackage{fancyhdr}\n", out);
+    std::fputs("\\usepackage[hidelinks]{hyperref}\n", out);
+    std::fputs("\\usepackage[normalem]{ulem}\n", out);
+    std::fputs("\\usepackage{amsmath,amssymb}\n", out);
+    std::fputs("\\usepackage{mathtools}\n", out);
+    std::fputs("\\usepackage{bm}\n", out);
+    std::fputs("\\usepackage{mathrsfs}\n", out);
+    std::fputs("\\usepackage{xcolor}\n", out);
+    std::fputs("\\usepackage{listings}\n", out);
+    std::fputs("\\usepackage{cancel}\n", out);
+    std::fputs("\\usepackage{geometry}\n", out);
+    std::fputs("\\usepackage{tabularx}\n", out);
+    std::fputs("\\usepackage{array}\n", out);
+    std::fputs("\\usepackage{multirow}\n", out);
+    std::fputs("\\geometry{margin=2cm}\n", out);
+        // 去掉所有章节序号（\section 等）：目录和正文都不显示数字
+    std::fputs("\\setcounter{secnumdepth}{-1}\n", out);
+
+    std::fputs("\\pagestyle{fancy}\n", out);
+    std::fputs("\\fancyhf{}\n", out);
+    std::fputs("\\fancyhead[LE]{\\thepage}\n", out);
+    std::fputs("\\fancyhead[RE]{\\nouppercase{\\normalfont \\rightmark}}\n", out);
+    std::fputs("\\fancyhead[LO]{\\nouppercase{\\normalfont \\rightmark}}\n", out);
+    std::fputs("\\fancyhead[RO]{\\thepage}\n", out);
+
+    std::fputs("\\titleformat{\\section}\n", out);
+    std::fputs("{\\ttfamily\\Large}\n", out);
+    std::fputs("{}\n", out);
+    std::fputs("{0em}{}\n", out);
+    std::fputs("\\titleformat{\\subsection}\n", out);
+    std::fputs("{\\ttfamily\\large}\n", out);
+    std::fputs("{}\n", out);
+    std::fputs("{0em}{}\n", out);
+    std::fputs("\\titleformat{\\subsubsection}\n", out);
+    std::fputs("{\\ttfamily\\color{gray}}\n", out);
+    std::fputs("{}\n", out);
+    std::fputs("{1em}{}\n", out);
+
+    std::fputs("\\lstset{\n", out);
+    std::fputs("    breaklines=true,\n", out);
+    std::fputs("    breakatwhitespace=false,\n", out);
+    std::fputs("    keepspaces=true,\n", out);
+    std::fputs("    showstringspaces=false,\n", out);
+    std::fputs("    tabsize=4,\n", out);
+    std::fputs("    keywordstyle=\\color{blue}\\bfseries,\n", out);
+    std::fputs("    commentstyle=\\color{green!50!black},\n", out);
+    std::fputs("    stringstyle=\\color{red!60!black},\n", out);
+    std::fputs("    frame=single,\n", out);
+    std::fputs("    columns=flexible,\n", out);
+    std::fputs("    numbers=left,\n", out);
+    std::fputs("    numberstyle=\\footnotesize\\ttfamily\\color{gray},\n", out);
+    std::fputs("    basicstyle=\\small\\ttfamily,\n", out);
+    std::fputs("    rulecolor=\\color{blue},\n", out);
+    std::fputs("}\n", out);
+
+        // 当前 TeX Live 的 listings 没有这些语言，手动补上，否则
+        // \begin{lstlisting}[language=Rust] 会报 "Couldn't load requested language"
+    std::fputs("\\lstdefinelanguage{Rust}{\n", out);
+    std::fputs("    morekeywords={as,async,await,break,const,continue,crate,dyn,else,enum,", out);
+    std::fputs("extern,false,fn,for,if,impl,in,let,loop,match,mod,move,mut,pub,ref,return,", out);
+    std::fputs("self,Self,static,struct,super,trait,true,type,unsafe,use,where,while,yield},\n", out);
+    std::fputs("  morecomment=[l]{//},\n", out);
+    std::fputs("  morecomment=[s]{/*}{*/},\n", out);
+    std::fputs("  morestring=[b]\",\n", out);
+    std::fputs("  morestring=[b]',\n", out);
+    std::fputs("}\n", out);
+    std::fputs("\\lstdefinelanguage{JavaScript}{\n", out);
+    std::fputs("  morekeywords={abstract,arguments,await,boolean,break,byte,case,catch,char,", out);
+    std::fputs("class,const,continue,debugger,default,delete,do,double,else,enum,eval,export,", out);
+    std::fputs("extends,false,final,finally,float,for,function,goto,if,implements,import,in,", out);
+    std::fputs("instanceof,int,interface,let,long,native,new,null,package,private,protected,", out);
+    std::fputs("public,return,short,static,super,switch,synchronized,this,throw,throws,", out);
+    std::fputs("transient,true,try,typeof,var,void,volatile,while,with,yield},\n", out);
+    std::fputs("  morecomment=[l]{//},\n", out);
+    std::fputs("  morecomment=[s]{/*}{*/},\n", out);
+    std::fputs("  morestring=[b]\",\n", out);
+    std::fputs("  morestring=[b]',\n", out);
+    std::fputs("  morestring=[b]`,\n", out);
+    std::fputs("}\n", out);
+    std::fputs("\\lstdefinelanguage{TypeScript}{\n", out);
+    std::fputs("  morekeywords={abstract,any,as,asserts,async,await,boolean,break,case,catch,", out);
+    std::fputs("class,const,continue,debugger,declare,default,delete,do,else,enum,export,", out);
+    std::fputs("extends,false,finally,for,from,function,get,if,implements,import,in,infer,", out);
+    std::fputs("instanceof,interface,is,keyof,let,module,namespace,never,new,null,number,", out);
+    std::fputs("object,of,package,private,protected,public,readonly,return,set,static,string,", out);
+    std::fputs("super,switch,symbol,this,throw,true,try,type,typeof,undefined,unknown,var,", out);
+    std::fputs("void,while,with,yield},\n", out);
+    std::fputs("  morecomment=[l]{//},\n", out);
+    std::fputs("  morecomment=[s]{/*}{*/},\n", out);
+    std::fputs("  morestring=[b]\",\n", out);
+    std::fputs("  morestring=[b]',\n", out);
+    std::fputs("  morestring=[b]`,\n", out);
+    std::fputs("}\n", out);
+    std::fputs("\\lstdefinelanguage{CSharp}{\n", out);
+    std::fputs("  morekeywords={abstract,as,base,bool,break,byte,case,catch,char,checked,", out);
+    std::fputs("class,const,continue,decimal,default,delegate,do,double,else,enum,event,", out);
+    std::fputs("explicit,extern,false,finally,fixed,float,for,foreach,goto,if,implicit,in,", out);
+    std::fputs("int,interface,internal,is,lock,long,namespace,new,null,object,operator,out,", out);
+    std::fputs("override,params,private,protected,public,readonly,ref,return,sbyte,sealed,", out);
+    std::fputs("short,sizeof,stackalloc,static,string,struct,switch,this,throw,true,try,", out);
+    std::fputs("typeof,uint,ulong,unchecked,unsafe,ushort,using,virtual,void,volatile,while},\n", out);
+    std::fputs("  morecomment=[l]{//},\n", out);
+    std::fputs("  morecomment=[s]{/*}{*/},\n", out);
+    std::fputs("  morestring=[b]\",\n", out);
+    std::fputs("  morestring=[b]',\n", out);
+    std::fputs("}\n", out);
+    std::fputs("\\lstdefinelanguage{CSS}{\n", out);
+    std::fputs("  morekeywords={align-items,align-self,animation,background,background-color,", out);
+    std::fputs("border,border-radius,bottom,box-shadow,color,content,cursor,display,flex,", out);
+    std::fputs("float,font,font-family,font-size,font-weight,grid,gap,height,justify-content,", out);
+    std::fputs("left,line-height,list-style,margin,max-height,max-width,min-height,min-width,", out);
+    std::fputs("opacity,overflow,padding,position,right,text-align,text-decoration,top,", out);
+    std::fputs("transform,transition,visibility,width,z-index},\n", out);
+    std::fputs("  morecomment=[s]{/*}{*/},\n", out);
+    std::fputs("  morestring=[b]\",\n", out);
+    std::fputs("  morestring=[b]',\n", out);
+    std::fputs("}\n", out);
+    std::fputs("\\lstdefinelanguage{Lua}{\n", out);
+    std::fputs("  morekeywords={and,break,do,else,elseif,end,false,for,function,goto,if,in,", out);
+    std::fputs("local,nil,not,or,repeat,return,then,true,until,while},\n", out);
+    std::fputs("  morecomment=[l]{--},\n", out);
+    std::fputs("  morecomment=[s]{--[[}{]]},\n", out);
+    std::fputs("  morestring=[b]\",\n", out);
+    std::fputs("  morestring=[b]',\n", out);
+    std::fputs("}\n", out);
+    std::fputs("\\colorlet{Red}{red}\\colorlet{Green}{green}\\colorlet{Blue}{blue}\n", out);
+    std::fputs("\\colorlet{Orange}{orange}\\colorlet{Pink}{pink}\\colorlet{Purple}{purple}\n", out);
+    std::fputs("\\colorlet{Cyan}{cyan}\\colorlet{Brown}{brown}\\colorlet{Teal}{teal}\n", out);
+    std::fputs("\\colorlet{Violet}{violet}\\colorlet{White}{white}\\colorlet{Black}{black}\n", out);
+    std::fputs("\\colorlet{Grey}{gray}\\colorlet{grey}{gray}\\colorlet{Gray}{gray}\n", out);
+    std::fputs("\\colorlet{default}{black}\n", out);
+    std::fputs("\\colorlet{normal}{black}\n", out);
+    std::fputs("\\colorlet{transparent}{white}\n", out);
+    std::fputs("\\definecolor{Aquamarine}{RGB}{127,255,212}\n", out);
+    std::fputs("\\definecolor{gold}{RGB}{255,215,0}\n", out);
+    std::fputs("\\providecommand{\\degree}{^{\\circ}}\n", out);
+    std::fputs("\\providecommand{\\exist}{\\exists}\n", out);
+    std::fputs("\\providecommand{\\infin}{\\infty}\n", out);
+    std::fputs("\\providecommand{\\sube}{\\subseteq}\n", out);
+    std::fputs("\\providecommand{\\supe}{\\supseteq}\n", out);
+    std::fputs("\\providecommand{\\lang}{\\langle}\n", out);
+    std::fputs("\\providecommand{\\rang}{\\rangle}\n", out);
+    std::fputs("\\providecommand{\\rarr}{\\rightarrow}\n", out);
+    std::fputs("\\providecommand{\\larr}{\\leftarrow}\n", out);
+    std::fputs("\\providecommand{\\uarr}{\\uparrow}\n", out);
+    std::fputs("\\providecommand{\\darr}{\\downarrow}\n", out);
+    std::fputs("\\providecommand{\\lrarr}{\\leftrightarrow}\n", out);
+    std::fputs("\\providecommand{\\xlongequal}[2][=]{\\overset{#2}{#1}}\n", out);
+    std::fputs("\\providecommand{\\argmax}{\\operatorname*{arg\\,max}}\n", out);
+    std::fputs("\\providecommand{\\argmin}{\\operatorname*{arg\\,min}}\n", out);
+    std::fputs("\\providecommand{\\ctg}{\\cot}\n", out);
+    std::fputs("\\providecommand{\\lt}{<}\n", out);
+    std::fputs("\\providecommand{\\gt}{>}\n", out);
+    std::fputs("\\providecommand{\\Alpha}{\\mathrm{A}}\n", out);
+    std::fputs("\\providecommand{\\Beta}{\\mathrm{B}}\n", out);
+    std::fputs("\\providecommand{\\Epsilon}{\\mathrm{E}}\n", out);
+    std::fputs("\\providecommand{\\Zeta}{\\mathrm{Z}}\n", out);
+    std::fputs("\\providecommand{\\Eta}{\\mathrm{H}}\n", out);
+    std::fputs("\\providecommand{\\Iota}{\\mathrm{I}}\n", out);
+    std::fputs("\\providecommand{\\Kappa}{\\mathrm{K}}\n", out);
+    std::fputs("\\providecommand{\\Mu}{\\mathrm{M}}\n", out);
+    std::fputs("\\providecommand{\\Nu}{\\mathrm{N}}\n", out);
+    std::fputs("\\providecommand{\\Omicron}{\\mathrm{O}}\n", out);
+    std::fputs("\\providecommand{\\Rho}{\\mathrm{P}}\n", out);
+    std::fputs("\\providecommand{\\Tau}{\\mathrm{T}}\n", out);
+    std::fputs("\\providecommand{\\Upsilon}{\\mathrm{Y}}\n", out);
+    std::fputs("\\providecommand{\\Chi}{\\mathrm{X}}\n", out);
+    std::fputs("\\providecommand{\\R}{\\mathbb{R}}\n", out);
+    std::fputs("\\providecommand{\\N}{\\mathbb{N}}\n", out);
+    std::fputs("\\providecommand{\\Z}{\\mathbb{Z}}\n", out);
+    std::fputs("\\providecommand{\\Q}{\\mathbb{Q}}\n", out);
+    std::fputs("\\providecommand{\\C}{\\mathbb{C}}\n", out);
+    std::fputs("\\providecommand{\\red}[1]{\\textcolor{red}{#1}}\n", out);
+    std::fputs("\\providecommand{\\blue}[1]{\\textcolor{blue}{#1}}\n", out);
+    std::fputs("\\providecommand{\\green}[1]{\\textcolor{green}{#1}}\n", out);
+    std::fputs("\\providecommand{\\pink}[1]{\\textcolor{pink}{#1}}\n", out);
+    std::fputs("\\providecommand{\\orange}[1]{\\textcolor{orange}{#1}}\n", out);
+    std::fputs("\\providecommand{\\purple}[1]{\\textcolor{purple}{#1}}\n", out);
+    std::fputs("\\providecommand{\\brown}[1]{\\textcolor{brown}{#1}}\n", out);
+    std::fputs("\\providecommand{\\gray}[1]{\\textcolor{gray}{#1}}\n", out);
+    std::fputs("\\providecommand{\\cyan}[1]{\\textcolor{cyan}{#1}}\n", out);
+    std::fputs("\\providecommand{\\teal}[1]{\\textcolor{teal}{#1}}\n", out);
+    std::fputs("\\providecommand{\\magenta}[1]{\\textcolor{magenta}{#1}}\n", out);
+    std::fputs("\\providecommand{\\yellow}[1]{\\textcolor{yellow}{#1}}\n", out);
+    std::fputs("\\providecommand{\\violet}[1]{\\textcolor{violet}{#1}}\n", out);
+    std::fputs("\\lstdefinelanguage{JavaScript}{\n", out);
+    std::fputs("keywords={break, case, catch, class, const, continue, debugger, default, delete, do, else, export, extends, finally, for, function, if, import, in, instanceof, let, new, return, super, switch, this, throw, try, typeof, var, void, while, with, yield, await, async, of, from, as},", out);
+    std::fputs("keywordstyle=\\color{blue}\\bfseries,\n", out);
+    std::fputs("ndkeywords={boolean, number, string, null, undefined, true, false},\n", out);
+    std::fputs("ndkeywordstyle=\\color{red}\\bfseries,\n", out);
+    std::fputs("identifierstyle=\\color{black},\n", out);
+    std::fputs("sensitive=false,\n", out);
+    std::fputs("comment=[l]{//},\n", out);
+    std::fputs("morecomment=[s]{/*}{*/},", out);
+    std::fputs("commentstyle=\\color{green}\\ttfamily,\n", out);
+    std::fputs("stringstyle=\\color{purple}\\ttfamily,\n", out);
+    std::fputs("morestring=[b]',\n", out);
+    std::fputs("morestring=[b]\"\n", out);
+    std::fputs("}\n", out);
+    std::fputs("\\title{luogu export}\n\\author{luogu-export}\n\\date{\\today}\n", out);
+
+    // 图片按像素尺寸（CSS 像素，1px = 0.75pt）排版，仅在超出正文宽度/高度时
+    // 按比例缩小。XeTeX 对没有 DPI 的位图按 72dpi 计算（把像素数直接当成 pt），
+    // 会让图片显得过大甚至超出页面，因此这里显式给定像素换算出的自然宽度。
+    // #1 图片路径；#2 自然宽度（pt，0 表示无法得到像素尺寸，如 PDF/EPS/
+    // 解析失败，此时回退到 graphicx 的自然尺寸，并由后续判断兜底缩放）。
+    std::fputs("\\newsavebox{\\luoguimgbox}\n", out);
+    std::fputs("\\newcommand{\\luoguimg}[2]{%\n", out);
+    std::fputs("  \\IfFileExists{#1}{%\n", out);
+    std::fputs("    \\ifdim#2pt>0pt%\n", out);
+    std::fputs("      \\sbox\\luoguimgbox{\\includegraphics[width=#2pt]{#1}}%\n", out);
+    std::fputs("    \\else%\n", out);
+    std::fputs("      \\sbox\\luoguimgbox{\\includegraphics{#1}}%\n", out);
+    std::fputs("    \\fi%\n", out);
+    std::fputs("    \\ifdim\\wd\\luoguimgbox>\\linewidth%\n", out);
+    std::fputs("      \\sbox\\luoguimgbox{\\includegraphics[width=\\linewidth]{#1}}%\n", out);
+    std::fputs("    \\fi%\n", out);
+    std::fputs("    \\ifdim\\dimexpr\\ht\\luoguimgbox+\\dp\\luoguimgbox\\relax>\\dimexpr\\textheight-2\\baselineskip\\relax%\n", out);
+    std::fputs("      \\sbox\\luoguimgbox{\\includegraphics[height=\\dimexpr\\textheight-2\\baselineskip\\relax]{#1}}%\n", out);
+    std::fputs("    \\fi%\n", out);
+    std::fputs("    \\usebox\\luoguimgbox%\n", out);
+    std::fputs("  }{\\mbox{}}%\n", out);
+    std::fputs("}%\n", out);
+
+    std::fputs("\\setmonofont{Consolas}\n", out);
+    std::fputs("\\setCJKmonofont{SimHei}\n", out);
+    std::fputs("\\newfontfamily{\\tagsfonts}{Noto Sans}[Script = CJK, CJKFont = WenQuanYi Micro Hei]\n", out);
+}
+} // namespace latex::detail

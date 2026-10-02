@@ -8,23 +8,12 @@
 #include "luogu-export/export/common.h"
 #include "luogu-export/export/markdown.h"
 #include "luogu-export/util/problem_info.h"
+#include "luogu-export/util/string_util.h"
 
 using nlohmann::json;
 
 namespace
 {
-
-std::string join_strings(const std::vector<std::string> &v, const std::string &sep)
-{
-    std::string out;
-    for (size_t i = 0; i < v.size(); ++i)
-    {
-        if (i)
-            out += sep;
-        out += v[i];
-    }
-    return out;
-}
 
 // 多语言字段取值：键存在但为 null 时按缺省处理
 std::string safe_string(const json &j, const char *key)
@@ -102,7 +91,7 @@ bool markdown::export_markdown(const luogu::ExportFilter &filter,
         // 标签：--show 末位为 0 时仅隐藏“算法”类（type 2）标签，其余类型始终显示
         std::vector<std::string> shown_tags = luogu::filter_display_tags(p.tags, show_tags);
         if (!shown_tags.empty())
-            std::fprintf(out, "标签：%s\n\n", join_strings(shown_tags, "、").c_str());
+            std::fprintf(out, "标签：%s\n\n", util::join_strings(shown_tags, "、").c_str());
 
         // 时空限制：多组限制输出最小-最大范围
         const pss limits = luogu::format_limits(p.time, p.memory);
