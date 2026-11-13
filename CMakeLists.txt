@@ -10,6 +10,7 @@ find_package(CURL REQUIRED)
 find_package(LibXml2 REQUIRED)
 find_package(nlohmann_json REQUIRED)
 find_package(ZLIB REQUIRED)
+find_package(Fontconfig REQUIRED)
 
 file(GLOB_RECURSE LUOGU_EXPORT_SOURCES CONFIGURE_DEPENDS src/*.cpp)
 
@@ -33,4 +34,5 @@ target_link_libraries(luogu-export PRIVATE
     LibXml2::LibXml2
     nlohmann_json::nlohmann_json
     ZLIB::ZLIB
+    Fontconfig::Fontconfig
 )

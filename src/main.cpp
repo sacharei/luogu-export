@@ -8,6 +8,7 @@
 #include "luogu-export/export/common.h"
 #include "luogu-export/export/latex.h"
 #include "luogu-export/export/markdown.h"
+#include "luogu-export/util/settings.h"
 
 int main(int argc, char *argv[])
 {
@@ -26,9 +27,53 @@ int main(int argc, char *argv[])
     if (options.update)
         result = crawler::update();
 
+    if (options.config)
+    {
+        // -O：只操作配置文件，不导出任何东西
+        if (options.config_list)
+        {
+            settings::Values values;
+            settings::load(values);
+            settings::print_list(values);
+            result = 0;
+        }
+        else if (options.config_show)
+        {
+            settings::Values values;
+            settings::load(values);
+            std::printf("%s\n", settings::raw_value(values, options.config_key).c_str());
+            result = 0;
+        }
+        else if (options.config_set)
+        {
+            std::vector<std::pair<std::string, std::string>> entries;
+            for (size_t i = 0; i + 1 < options.config_pairs.size(); i += 2)
+                entries.emplace_back(options.config_pairs[i], options.config_pairs[i + 1]);
+            std::string error;
+            if (settings::set(entries, error))
+            {
+                for (const auto &entry : entries)
+                    std::printf("%s: %s\n", entry.first.c_str(), entry.second.c_str());
+                std::printf("saved to %s\n", settings::config_path().string().c_str());
+                result = 0;
+            }
+            else
+            {
+                cli::printError(error);
+                result = 1;
+            }
+        }
+        curl_global_cleanup();
+        return result;
+    }
+
     if (options.markdown)
     {
-        const std::string out_path = options.output.empty() ? "problems.md" : options.output;
+        std::vector<settings::Problem> problems;
+        const std::string out_path = options.output.empty()
+                                         ? settings::default_output_name(".md", &problems)
+                                         : options.output;
+        settings::print_warnings(problems);
         std::string error;
         if (markdown::export_markdown(options.filter, out_path, error))
             cli::printSuccess("Exported matching problems to '" + out_path + "'");
@@ -40,7 +85,11 @@ int main(int argc, char *argv[])
     }
     else if (options.latex)
     {
-        const std::string out_path = options.output.empty() ? "problems.tex" : options.output;
+        std::vector<settings::Problem> problems;
+        const std::string out_path = options.output.empty()
+                                         ? settings::default_output_name(".tex", &problems)
+                                         : options.output;
+        settings::print_warnings(problems);
         std::string error;
         if (!latex::export_latex(options.filter, out_path, error))
         {

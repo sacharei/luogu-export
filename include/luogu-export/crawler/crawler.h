@@ -50,7 +50,8 @@ namespace crawler
     /// @return 成功返回 html 的文章内容，失败返回空字符串
     std::string get_html_article(std::string id, derror* error = nullptr);
 
-    /// @return the base cache directory used by this program
+    /// @return the problem cache directory (latest.ndjson / tags.json),
+    ///         controlled by settings.conf [paths] problem_cache
     std::filesystem::path get_cache_dir();
 
     /// 更新标签缓存（来源：官方标签接口 /_lfe/tags/zh-CN）
@@ -67,7 +68,7 @@ namespace crawler
     /// @return SUCCESS 或对应错误码（部分失败时返回第一个错误码）
     derror download_images(const std::vector<std::string> &urls);
 
-    /// 返回图片 URL 在缓存中对应的文件路径（<cache_dir>/images/<文件名>）。
+    /// 返回图片 URL 在缓存中对应的文件路径（[paths] image_cache/<文件名>）。
     /// 文件名由完整链接生成，与 download_images 的落盘位置一致。
     std::filesystem::path image_cache_path(const std::string &url);
 

@@ -6,9 +6,11 @@
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include <stdexcept>
 #include <string>
 #include <vector>
 #include "luogu-export/export/common.h"
+#include "luogu-export/util/settings.h"
 #include "luogu-export/util/string_util.h"
 #include "luogu-export/util/tag_cache.h"
 
@@ -35,10 +37,17 @@ const char *kUsage =
     "                          separated by spaces or by repeating --difficulty (any match is enough)\n"
     "      --type <B|P>        Filter by problem type (repeatable; empty means all types)\n"
     "      --lang <zh-CN|en>   Problem statement language (default: zh-CN)\n"
-    "      --show <NN>         Show flags for -M only: first bit = difficulty, second bit = tags;\n"
-    "                          1 shows, 0 hides (default: 11). Hiding tags only hides\n"
-    "                          algorithm-type tags, other types are always shown\n"
-    "      --output <file>     Output file (default: problems.md / problems.tex)\n"
+    "      --show <NN>         Without -O: show flags for -M only; first bit = difficulty,\n"
+    "                          second bit = tags; 1 shows, 0 hides (default: 11)\n"
+    "                          Hiding tags only hides algorithm-type tags, other types\n"
+    "                          are always shown\n"
+    "      --output <file>     Output file (default: from default_title, e.g. problems.md)\n"
+    "  -O, --config    Configuration mode (fonts and export defaults); use with one of:\n"
+    "      --list              Print every key, its current value and a description\n"
+    "      --show <key>        Print the current value of one key\n"
+    "      --set <key> <value> [<key> <value> ...]\n"
+    "                          Set keys (pairs of key and value). A font value may be a\n"
+    "                          font name, another font key, or \"default\"\n"
     "  -h, --help      Show this help message\n";
 
 void printUsage()
@@ -155,6 +164,8 @@ enum
     OPT_LANG,
     OPT_SHOW,
     OPT_TAGS,
+    OPT_SET,
+    OPT_LIST,
 };
 
 bool parse(int argc, char *argv[], Options &options, int &exit_code)
@@ -173,12 +184,14 @@ bool parse(int argc, char *argv[], Options &options, int &exit_code)
         {"lang",       required_argument, nullptr, OPT_LANG},
         {"show",       required_argument, nullptr, OPT_SHOW},
         {"tags",       no_argument,       nullptr, OPT_TAGS},
+        {"set",        required_argument, nullptr, OPT_SET},
+        {"list",       no_argument,       nullptr, OPT_LIST},
         {"help",       no_argument,       nullptr, 'h'},
         {nullptr,      0,                 nullptr, 0},
     };
 
     int opt;
-    while ((opt = getopt_long(argc, argv, "UMLh", kLongOptions, nullptr)) != -1)
+    while ((opt = getopt_long(argc, argv, "UMLOh", kLongOptions, nullptr)) != -1)
     {
         switch (opt)
         {
@@ -190,6 +203,9 @@ bool parse(int argc, char *argv[], Options &options, int &exit_code)
             break;
         case 'L':
             options.latex = true;
+            break;
+        case 'O':
+            options.config = true;
             break;
         case OPT_TAG:
             // 先整体保留，具体按一个标签还是按空格拆分，交给 select_problems
@@ -236,21 +252,20 @@ bool parse(int argc, char *argv[], Options &options, int &exit_code)
             break;
         }
         case OPT_SHOW:
-        {
-            const std::string s = optarg;
-            options.show_explicit = true;
-            if (s.size() != 2 ||
-                (s[0] != '0' && s[0] != '1') ||
-                (s[1] != '0' && s[1] != '1'))
-            {
-                printError("invalid show: '" + std::string(optarg) + "' (expected two bits, e.g. 11 / 01 / 10 / 00)");
-                { exit_code = 1; return false; }
-            }
-            options.filter.show = s;
+            // --show 有两种含义（-M 的显示选项 / -O 的查询 key），
+            // 与选项顺序无关，统一等解析完再判断
+            options.show_given = true;
+            options.show_arg = optarg;
             break;
-        }
         case OPT_TAGS:
             options.list_tags = true;
+            break;
+        case OPT_SET:
+            options.config_set = true;
+            options.config_pairs.emplace_back(optarg);
+            break;
+        case OPT_LIST:
+            options.config_list = true;
             break;
         case 'h':
             options.help = true;
@@ -258,6 +273,29 @@ bool parse(int argc, char *argv[], Options &options, int &exit_code)
         default: // getopt_long 已输出具体错误信息
             printUsage();
             { exit_code = 1; return false; }
+        }
+    }
+
+    // --show 的含义取决于有没有 -O
+    if (options.show_given)
+    {
+        if (options.config)
+        {
+            options.config_show = true;
+            options.config_key = options.show_arg;
+        }
+        else
+        {
+            const std::string &s = options.show_arg;
+            options.show_explicit = true;
+            if (s.size() != 2 ||
+                (s[0] != '0' && s[0] != '1') ||
+                (s[1] != '0' && s[1] != '1'))
+            {
+                printError("invalid show: '" + s + "' (expected two bits, e.g. 11 / 01 / 10 / 00)");
+                { exit_code = 1; return false; }
+            }
+            options.filter.show = s;
         }
     }
 
@@ -269,6 +307,66 @@ bool parse(int argc, char *argv[], Options &options, int &exit_code)
 
     if (options.list_tags)
         { exit_code = print_tag_list() ? 0 : 1; return false; }
+
+    // -O：字体配置模式。--set 的第二个及以后的参数由 getopt 留在 optind 之后，
+    // 这里一并收进来（它们不是待筛选的题目参数）。
+    if (options.config && options.config_set && optind < argc)
+    {
+        for (int i = optind; i < argc; ++i)
+            options.config_pairs.emplace_back(argv[i]);
+        optind = argc;
+    }
+
+    if (options.config)
+    {
+        if (options.markdown || options.latex || options.update)
+        {
+            printError("option -O cannot be combined with -U, -M or -L");
+            { exit_code = 1; return false; }
+        }
+        const int selected = (options.config_list ? 1 : 0) +
+                             (options.config_show ? 1 : 0) +
+                             (options.config_set ? 1 : 0);
+        if (selected == 0)
+        {
+            printError("option -O needs one of --list, --show <key> or --set <key> <value>");
+            { exit_code = 1; return false; }
+        }
+        if (selected > 1)
+        {
+            printError("options --list, --show and --set cannot be combined");
+            { exit_code = 1; return false; }
+        }
+        if (options.config_show && !settings::has_key(options.config_key))
+        {
+            printError("unknown key: '" + options.config_key + "' (use -O --list to see all keys)");
+            { exit_code = 1; return false; }
+        }
+        if (options.config_set)
+        {
+            if (options.config_pairs.size() < 2)
+            {
+                printError("--set expects at least one key/value pair");
+                { exit_code = 1; return false; }
+            }
+            if (options.config_pairs.size() % 2 != 0)
+            {
+                printError("--set expects an even number of arguments (key value [key value ...])");
+                { exit_code = 1; return false; }
+            }
+            for (size_t i = 0; i + 1 < options.config_pairs.size(); i += 2)
+            {
+                if (!settings::has_key(options.config_pairs[i]))
+                {
+                    printError("unknown key: '" + options.config_pairs[i] +
+                               "' (use -O --list to see all keys)");
+                    { exit_code = 1; return false; }
+                }
+            }
+        }
+        // 校验通过：交给 main 执行（与 -U 一样属于“要真正干活”的模式）
+        return true;
+    }
 
     if (options.latex && options.show_explicit)
     {
@@ -297,7 +395,7 @@ bool parse(int argc, char *argv[], Options &options, int &exit_code)
         }
     }
 
-    if (!options.update && !options.markdown && !options.latex)
+    if (!options.update && !options.markdown && !options.latex && !options.config)
     {
         printError("no operation specified (use -h for help)");
         { exit_code = 1; return false; }

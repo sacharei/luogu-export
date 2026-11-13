@@ -7,6 +7,7 @@
 #include "luogu-export/export/latex.h"
 #include "luogu-export/export/latex/image.h"
 #include "luogu-export/export/latex/preamble.h"
+#include "luogu-export/util/settings.h"
 
 #include <cstdio>
 #include <filesystem>
@@ -17,11 +18,42 @@ namespace latex
 {
 using namespace detail;
 
+// 读取配置；首次运行（配置文件不存在）时按默认值生成一份，
+// 并把路径打印给用户，方便按需修改。
+void load_settings(settings::Values &values)
+{
+    const std::filesystem::path path = settings::config_path();
+    const bool existed = std::filesystem::exists(path);
+    // load() 在文件不存在或无法读取时也会填入程序内默认值，这里不能清空，
+    // 否则首次运行（配置文件尚未生成）会退化成「所有字体宏都是空的」。
+    settings::load(values);
+
+    // 补全缺失的 key（首次运行时整份写出），并保留用户已有的设置与注释
+    const bool changed = settings::append_missing_defaults(path);
+    if (changed && !existed)
+    {
+        std::printf("Created settings file '%s' with default values.\n", path.string().c_str());
+        std::printf("Edit it to change fonts and export defaults.\n");
+        fflush(stdout);
+    }
+    else if (changed)
+    {
+        std::printf("Added missing keys to settings file '%s'.\n", path.string().c_str());
+        fflush(stdout);
+    }
+}
+
 bool export_latex(const luogu::ExportFilter &filter,
                   const std::filesystem::path &output_path,
                   std::string &error)
 {
     error.clear();
+
+    settings::Values values;
+    load_settings(values);
+    // 解析字体引用并校验字体是否在本机；有问题的 key 回退为 default
+    const settings::FontSetup fonts = settings::prepare_fonts(values);
+    settings::print_warnings(fonts.problems);
 
     // 筛选（-M / -L 共用），结果已按题号排序
     std::vector<problem::Problem> problems;
@@ -77,7 +109,7 @@ bool export_latex(const luogu::ExportFilter &filter,
         return false;
     }
 
-    write_preamble(out);
+    write_preamble(out, fonts.resolved);
 
     std::fputs("\\begin{document}\n\n", out);
     std::fputs("\\maketitle\n", out);

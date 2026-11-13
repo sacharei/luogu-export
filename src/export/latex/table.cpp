@@ -17,6 +17,67 @@
 
 namespace latex::detail
 {
+namespace
+{
+// 位置 i 处的“不可见空白”占几个字节（0 表示该位置不是空白）。
+// 除 ASCII 空白外，还要识别洛谷题面里常见的 U+00A0（不换行空格）与
+// U+3000（全角空格）：它们是不可见的排版空白，但却会被 trim() 当成普通内容，
+// 进而让单元格切分多出一个空列（如 P17432 表格右侧多余的列）。
+size_t blank_len_at(const std::string &s, size_t i)
+{
+    const unsigned char c = static_cast<unsigned char>(s[i]);
+    if (c < 0x80)
+        return std::isspace(c) ? 1 : 0;
+    if (c == 0xC2 && i + 1 < s.size() &&
+        static_cast<unsigned char>(s[i + 1]) == 0xA0)
+        return 2; // U+00A0 NO-BREAK SPACE
+    if (c == 0xE3 && i + 2 < s.size() &&
+        static_cast<unsigned char>(s[i + 1]) == 0x80 &&
+        static_cast<unsigned char>(s[i + 2]) == 0x80)
+        return 3; // U+3000 IDEOGRAPHIC SPACE
+    return 0;
+}
+
+// 跳过开头空白后的起始位置
+size_t blank_trim_begin(const std::string &s)
+{
+    size_t i = 0;
+    while (i < s.size())
+    {
+        const size_t n = blank_len_at(s, i);
+        if (n == 0)
+            break;
+        i += n;
+    }
+    return i;
+}
+
+// 去掉尾部空白后的长度
+size_t blank_trim_end(const std::string &s)
+{
+    size_t end = s.size();
+    while (end > 0)
+    {
+        size_t start = end - 1; // 回退到该字符的首字节
+        while (start > 0 && (static_cast<unsigned char>(s[start]) & 0xC0) == 0x80)
+            --start;
+        const size_t n = blank_len_at(s, start);
+        if (n == 0 || start + n != end)
+            break;
+        end = start;
+    }
+    return end;
+}
+
+// 去掉首尾的空白（含 U+00A0 / U+3000）
+std::string strip_blank_ends(const std::string &s)
+{
+    const size_t begin = blank_trim_begin(s);
+    const size_t end = blank_trim_end(s);
+    return (end > begin) ? s.substr(begin, end - begin) : std::string();
+}
+} // namespace
+
 // 是否以某种“块级”语法开头（用于结束普通段落）
 bool is_block_start(const std::string &t)
 {
@@ -370,14 +431,24 @@ double estimate_cell_width(const std::string &s)
 }
 
 // 表格：rows[0] 表头，rows[1] 对齐行，其余为内容行
-void emit_table(const std::vector<std::string> &rows, std::string &out)
+void emit_table(const std::vector<std::string> &rows, std::string &out,
+                const TableStyle &style)
 {
     auto split_cells = [](const std::string &row) {
         std::string r = trim(row);
-        if (!r.empty() && r.front() == '|')
+        // 行首的 '|' 之前、行尾的 '|' 之后可能还跟着 U+00A0（不换行空格）
+        // 或 U+3000（全角空格）这类不可见空白，例如 P17432 的行尾
+        // "...|$10$|<U+00A0>"。trim() 只认 ASCII，会让首尾 '|' 判断失败，
+        // 于是多切出一个空列。这里只有“去掉不可见空白后确实露出 '|'”
+        // 才把它当分隔符，以免影响用全角空格做对齐填充的正常表格（如 P3933）。
+        const size_t head = blank_trim_begin(r);
+        if (head > 0 && head < r.size() && r[head] == '|')
+            r.erase(0, head + 1);
+        else if (!r.empty() && r.front() == '|')
             r.erase(r.begin());
-        if (!r.empty() && r.back() == '|')
-            r.pop_back();
+        const size_t tail = blank_trim_end(r);
+        if (tail > 0 && r[tail - 1] == '|')
+            r.erase(tail - 1);
         std::vector<std::string> cells;
         std::string cur;
         for (char c : r)
@@ -393,8 +464,9 @@ void emit_table(const std::vector<std::string> &rows, std::string &out)
             }
         }
         cells.push_back(cur);
-        // 去掉末尾的空单元格（源数据里常见 "||" 多出的空列）
-        while (!cells.empty() && trim(cells.back()).empty())
+        // 去掉末尾的空单元格（源数据里常见 "||" 多出的空列，以及只含
+        // U+00A0/U+3000 这类不可见空白的列）
+        while (!cells.empty() && strip_blank_ends(cells.back()).empty())
             cells.pop_back();
         return cells;
     };
@@ -583,7 +655,30 @@ void emit_table(const std::vector<std::string> &rows, std::string &out)
         return ">{\\raggedright\\arraybackslash}p{";
     };
 
-    std::string spec = "|";
+    // 竖线策略：三线表不画竖线；普通表格四周加边框；tuack 只在列之间画细竖线
+    const bool verticals = (style.kind != TableStyle::Three);
+    const bool outer_border = (style.kind == TableStyle::Plain);
+    // 线宽与洛谷的 CSS 一一对应（CSS 1px = 0.75pt）：
+    //   .cute-table-tuack table    border-top/bottom 5px → 3.75pt（上下粗线）
+    //   .cute-table-tuack thead    border-bottom     3px → 2.25pt（表头下）
+    //   .cute-table-tuack tr       border-bottom     1px → 0.75pt（行间细线）
+    //   .cute-table-tuack col      border-left       1px → 0.75pt（列间细线，
+    //     由 luogucutable 环境里的 \arrayrulewidth 控制）
+    //   .cute-table-tuack col.cute-table-bold-col 3px → 2.25pt（tuack=N 分组线）
+    const std::string kThickRule = "3.75pt";
+    const std::string kMidRule = "2.25pt";
+    const std::string kThinRule = "0.75pt";
+    // 第 c 列之前的列间材料：tuack=N 时每 N 列的分组边界改画粗竖线
+    auto col_sep = [&](size_t c) -> std::string {
+        if (!verticals)
+            return "";
+        if (style.kind == TableStyle::Tuack && style.group > 0 &&
+            c % static_cast<size_t>(style.group) == 0)
+            return "!{\\vrule width " + kMidRule + "}";
+        return "|";
+    };
+
+    std::string body_spec;
     if (need_wrap)
     {
         // 按估算比例分配列宽，总和铺满行宽（保证任意长内容都能折行）
@@ -605,21 +700,31 @@ void emit_table(const std::vector<std::string> &rows, std::string &out)
         }
         for (size_t c = 0; c < col_count; ++c)
         {
-            spec += pcol_prefix(aligns[c]) + fmt_pt(pwidth[c]) + "}";
-            spec += '|';
+            if (c > 0)
+                body_spec += col_sep(c);
+            body_spec += pcol_prefix(aligns[c]) + fmt_pt(pwidth[c]) + "}";
         }
     }
     else
     {
         for (size_t c = 0; c < col_count; ++c)
         {
-            spec += aligns[c];
-            spec += '|';
+            if (c > 0)
+                body_spec += col_sep(c);
+            body_spec += aligns[c];
         }
     }
+    const std::string spec =
+        outer_border ? ("|" + body_spec + "|") : body_spec;
 
-    auto emit_cell = [&](const TableCell &cell, size_t c) {
-        const std::string content = inline_to_latex(cell.content);
+    auto emit_cell = [&](const TableCell &cell, size_t c, size_t r) {
+        // 表头行（cute-table 的第一行）与普通单元格可以用不同字体。
+        // 字体命令后必须留一个空格：单元格常以中文开头，而 XeTeX 里中文字符
+        // 的 catcode 是 11（字母类），紧跟控制词会被并进命令名，变成
+        // "\luogufonttable无限制" 这种未定义命令（见 math.cpp 的同类说明）。
+        // 字体命令以字体族赋值结尾，TeX 会吞掉这个空格，不会引入多余空白。
+        const std::string cell_font = (r == 0) ? "\\luogufonttableheader " : "\\luogufonttable ";
+        const std::string content = cell_font + inline_to_latex(cell.content);
         const std::string ncols = std::to_string(cell.colspan);
         const std::string nrows_s = std::to_string(cell.rowspan);
         // \multicolumn 会吞掉其右侧边界的竖线（\multispan 跳过被跨列的模板，
@@ -628,7 +733,12 @@ void emit_table(const std::vector<std::string> &rows, std::string &out)
         // halign 会把开头的 | 拆成独立的一列，导致合并格内部出现多余的竖线
         // 并破坏整表列结构；跨到第 0 列时左侧边框因此缺失（该情况很罕见，
         // 原实现同样没有左侧边框）。
-        const std::string mc_trail = "|";
+        // tuack/three 没有外框：合并区域恰好延伸到最后一列时不能补右竖线，
+        // 否则会在表的右边缘画出一条本来不该有的竖线。
+        const bool span_right_rule =
+            verticals && (c + static_cast<size_t>(cell.colspan) < col_count ||
+                          outer_border);
+        const std::string mc_trail = span_right_rule ? "|" : "";
         if (need_wrap)
         {
             // p{} 列：单元格内容自动折行。合并格的 \multicolumn 宽度取整个合并区域
@@ -698,8 +808,16 @@ void emit_table(const std::vector<std::string> &rows, std::string &out)
                 // 左边界由左侧单元格一侧负责绘制（普通单元格模板的尾竖线、
                 // 合并格的尾 |），因此这里不画左竖线——在开头加 | 会被
                 // XeLaTeX 拆成独立列、破坏结构（见 emit_cell 注释）。
-                const bool right_rule =
-                    (c + 1 >= col_count) || (resolve(r, c + 1) != owner);
+                // 右边界：仅当该处确实存在列间竖线时才补（tuack/three 无外框，
+                // 最后一列不再补右边框）。
+                bool right_rule = false;
+                if (verticals)
+                {
+                    if (c + 1 < col_count)
+                        right_rule = (resolve(r, c + 1) != owner);
+                    else
+                        right_rule = outer_border;
+                }
                 out += "\\multicolumn{1}{c";
                 if (right_rule)
                     out += "|";
@@ -707,14 +825,15 @@ void emit_table(const std::vector<std::string> &rows, std::string &out)
                 ++c;
                 continue;
             }
-            emit_cell(cell, c);
+            emit_cell(cell, c, r);
             c += static_cast<size_t>(cell.colspan);
         }
         out += " \\\\\n";
     };
 
-    // 行间横线：列 c 的纵向跨段在本行结束时画线，否则（跨段延续）不画
-    auto emit_boundary = [&](size_t r) {
+    // 行间横线：列 c 的纵向跨段在本行结束时画线，否则（跨段延续）不画。
+    // booktabs 参数为真时用 \midrule / \cmidrule（tuack / three 用）。
+    auto emit_boundary = [&](size_t r, bool booktabs) {
         std::vector<bool> border(col_count, false);
         for (size_t c = 0; c < col_count; ++c)
             border[c] = (span_end(r, c) <= static_cast<int>(r));
@@ -738,26 +857,52 @@ void emit_table(const std::vector<std::string> &rows, std::string &out)
         if (runs.size() == 1 && runs[0].first == 0 &&
             runs[0].second == col_count - 1)
         {
-            out += "\\hline\n";
+            out += booktabs ? ("\\midrule[" + kThinRule + "]\n") : "\\hline\n";
         }
         else
         {
             for (const auto &run : runs)
-                out += "\\cline{" + std::to_string(run.first + 1) + "-" +
-                       std::to_string(run.second + 1) + "}\n";
+            {
+                const std::string range = std::to_string(run.first + 1) + "-" +
+                                          std::to_string(run.second + 1);
+                out += booktabs ? ("\\cmidrule[" + kThinRule + "]{" + range + "}\n")
+                                : ("\\cline{" + range + "}\n");
+            }
         }
     };
 
-    // \noindent：表格铺满行宽时，段落首行缩进（\parindent）会把表格推出页面
-    out += "\\noindent\\begin{tabular}{" + spec + "}\n";
-    out += "\\hline\n"; // 顶部全宽横线
+    // 普通表格贴左对齐（\noindent），避免段落首行缩进（\parindent）把表格推出页面；
+    // cute-table 在洛谷上是自然宽度并居中排版，这里用 center 环境对应。
+    if (style.kind == TableStyle::Plain)
+    {
+        out += "\\noindent\\begin{tabular}{" + spec + "}\n";
+        out += "\\hline\n"; // 顶部全宽横线
+        for (size_t r = 0; r < nrows; ++r)
+        {
+            emit_row_latex(r);
+            if (r + 1 < nrows)
+                emit_boundary(r, false);
+        }
+        out += "\\hline\n"; // 底部全宽横线
+        out += "\\end{tabular}\n\n";
+        return;
+    }
+
+    // cute-table（tuack / three）：booktabs 三线风格，整表居中（见 preamble 的
+    // luogucutable：清零 booktabs 的横线间距，让列间竖线与横线连成一体）
+    out += "\\begin{luogucutable}\n";
+    out += "\\begin{tabular}{" + spec + "}\n";
+    out += "\\toprule[" + kThickRule + "]\n"; // 顶部粗线（CSS 5px）
     for (size_t r = 0; r < nrows; ++r)
     {
         emit_row_latex(r);
-        if (r + 1 < nrows)
-            emit_boundary(r);
+        if (r == 0)
+            out += "\\midrule[" + kMidRule + "]\n"; // 表头下的线（CSS 3px）
+        else if (r + 1 < nrows && style.kind == TableStyle::Tuack)
+            emit_boundary(r, true); // 三线表（three）行间不画任何线
     }
-    out += "\\hline\n"; // 底部全宽横线
-    out += "\\end{tabular}\n\n";
+    out += "\\bottomrule[" + kThickRule + "]\n"; // 底部粗线（CSS 5px）
+    out += "\\end{tabular}\n";
+    out += "\\end{luogucutable}\n\n";
 }
 } // namespace latex::detail

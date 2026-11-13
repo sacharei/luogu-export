@@ -17,9 +17,19 @@ namespace cli
         bool latex = false;     // -L, --latex
         bool list_tags = false; // --tags
         bool help = false;      // -h, --help
-        bool show_explicit = false; // 是否显式给了 --show
+        bool show_explicit = false; // 是否显式给了 --show（-M 的显示选项）
+        bool show_given = false;    // 是否给了 --show（解析完才能确定含义）
+        std::string show_arg;       // --show 的参数
         std::string output;     // --output（空则按模式取默认 problems.md / problems.tex）
         luogu::ExportFilter filter; // -M / -L 共用的筛选条件
+
+        // -O：字体配置模式，配合 --set / --show / --list 使用
+        bool config = false;                        // -O
+        bool config_list = false;                   // -O --list
+        bool config_show = false;                   // -O --show
+        bool config_set = false;                    // -O --set
+        std::string config_key;                     // -O --show 的 key
+        std::vector<std::string> config_pairs;      // -O --set 的 key/value 序列
     };
 
     // 解析命令行参数。

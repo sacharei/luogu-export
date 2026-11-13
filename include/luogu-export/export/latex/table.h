@@ -60,8 +60,28 @@ namespace latex::detail
     // 近似估算 markdown 片段的渲染宽度（pt），用于决定表格是否换行及列宽
     double estimate_cell_width(const std::string &s);
 
+    // 表格样式。Luogu 的 ::cute-table{...} 会切换成与普通表格不同的画法：
+    //   Plain —— 普通表格：四周加边框，行间用 \hline / \cline
+    //   Tuack —— ::cute-table{tuack}：无外框，列间细竖线，上下粗线 + 表头下
+    //            粗线 + 行间细线（booktabs 风格），整表居中
+    //   Three —— ::cute-table{three}：三线表，无任何竖线，只有上下粗线和表头下粗线
+    struct TableStyle
+    {
+        enum Kind
+        {
+            Plain,
+            Tuack,
+            Three,
+        };
+
+        Kind kind = Plain;
+        // ::cute-table{tuack=N}：每 N 列插入一条粗竖线（分组），0 表示不分组
+        int group = 0;
+    };
+
     // 表格：rows[0] 表头，rows[1] 对齐行，其余为内容行
-    void emit_table(const std::vector<std::string> &rows, std::string &out);
+    void emit_table(const std::vector<std::string> &rows, std::string &out,
+                    const TableStyle &style = TableStyle{});
 }
 
 #endif // LUOGU_EXPORT_LATEX_TABLE_H

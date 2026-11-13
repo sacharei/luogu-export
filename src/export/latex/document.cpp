@@ -26,6 +26,39 @@ namespace latex
 {
 using namespace detail;
 
+namespace
+{
+// 会自己开启 display 数学结构的顶层环境。这类环境不能再套在 \[ \] 里，
+// 否则 amsmath 会报 "Erroneous nesting of equation structures"
+// （如洛谷题面里常见的 $$\begin{align*}...\end{align*}$$）。
+bool is_display_math_env(const std::string &env)
+{
+    static const std::set<std::string> kEnvs = {
+        "align",     "align*",    "alignat",  "alignat*", "flalign",
+        "flalign*",  "gather",    "gather*",  "multline", "multline*",
+        "equation",  "equation*", "eqnarray", "eqnarray*",
+    };
+    return kEnvs.count(env) > 0;
+}
+
+// body 整体就是一个 display 数学环境时返回 true，环境名写入 env
+bool is_standalone_math_env(const std::string &body, std::string &env)
+{
+    const std::string text = trim(body);
+    if (text.rfind("\\begin{", 0) != 0)
+        return false;
+    const size_t close = text.find('}', 7);
+    if (close == std::string::npos)
+        return false;
+    env = text.substr(7, close - 7);
+    if (!is_display_math_env(env))
+        return false;
+    const std::string end = "\\end{" + env + "}";
+    return text.size() >= end.size() &&
+           text.compare(text.size() - end.size(), end.size(), end) == 0;
+}
+} // namespace
+
 std::string markdown_to_latex(const std::string &markdown)
 {
     std::vector<std::string> lines;
@@ -33,7 +66,16 @@ std::string markdown_to_latex(const std::string &markdown)
     lines.emplace_back(); // 末尾哨兵，简化处理
 
     std::string out;
-    std::vector<std::string> env_stack; // 自定义块环境栈（quote/center/flushright）
+    std::vector<std::string> env_stack; // 自定义块环境栈（quote/center/flushright/折叠框）
+    // 当前是否位于折叠框内（含被拍平成 quote 的嵌套折叠框）
+    auto inside_callout = [&env_stack]() {
+        for (const std::string &e : env_stack)
+            if (e.rfind("luogucallout", 0) == 0)
+                return true;
+        return false;
+    };
+    // ::cute-table{...} 只作用于紧随其后的那一张表；未遇到表格时保持默认样式
+    TableStyle pending_table_style;
 
     char fence = 0;        // 当前代码围栏字符（` 或 ~），0 表示不在代码块内
     size_t fence_len = 0;
@@ -55,15 +97,31 @@ std::string markdown_to_latex(const std::string &markdown)
                 // lstlisting + breaklines：超长行（如几千个括号）会生成
                 // 极宽的 hbox，XeTeX 会直接崩溃；开启自动换行后不再超宽
                 const std::string lang = fence_to_listings_lang(fence_lang);
-                out += "\\begin{lstlisting}";
-                if (!lang.empty())
-                    out += "[language=" + lang + ",breaklines=true]";
-                else
-                    out += "[breaklines=true]";
-                out += "\n";
+                // 先把代码拼好，顺便统计物理行数（split_long_line 可能把一行拆成多行，
+                // 这个行数决定行号的最大位数）
+                std::string code_body;
+                size_t listing_lines = 0;
                 for (const auto &cl : code_lines)
-                    out += split_long_line(cl) + "\n";
-                out += "\\end{lstlisting}\n\n";
+                {
+                    const std::string l = split_long_line(cl);
+                    listing_lines += 1 + static_cast<size_t>(std::count(l.begin(), l.end(), '\n'));
+                    code_body += l + "\n";
+                }
+                std::string opts = "breaklines=true";
+                if (!lang.empty())
+                    opts = "language=" + lang + "," + opts;
+                // 折叠框里的代码框：listings 的行号画在代码框左侧的版心外，
+                // 默认会伸进折叠框的彩色竖线里（多位数行号尤其明显）。
+                // 按行号位数把整段 listing 右移，给行号留出净空；
+                // xleftmargin 会同时移动代码框和行号，因此嵌套折叠框里也有效。
+                if (inside_callout())
+                {
+                    int digits = 1;
+                    for (size_t n = listing_lines; n >= 10; n /= 10)
+                        ++digits;
+                    opts += ",xleftmargin=" + std::to_string(8 + 4 * digits) + "pt";
+                }
+                out += "\\begin{lstlisting}[" + opts + "]\n" + code_body + "\\end{lstlisting}\n\n";
                 fence = 0;
                 fence_len = 0;
                 fence_lang.clear();
@@ -82,6 +140,10 @@ std::string markdown_to_latex(const std::string &markdown)
             ++i;
             continue;
         }
+
+        // ::cute-table 的样式只作用于紧随其后的表格；若下一块不是表格则丢弃
+        if (pending_table_style.kind != TableStyle::Plain && !is_table_row(line))
+            pending_table_style = TableStyle{};
 
         // ---- 打开代码块（``` 或 ~~~）----
         if (line.size() >= 3 && (line[0] == '`' || line[0] == '~'))
@@ -140,14 +202,57 @@ std::string markdown_to_latex(const std::string &markdown)
             for (const auto &mline : split_lines(math))
                 if (!trim(mline).empty())
                     ml.push_back(trim(mline));
-            out += "\\[\n" + sanitize_math(util::join_strings(ml, "\n")) + "\n\\]\n\n";
+            const std::string body = sanitize_math(util::join_strings(ml, "\n"));
+            // 本身已是 align* 之类的 display 环境时直接输出，不能再包 \[ \]
+            std::string env;
+            if (is_standalone_math_env(body, env))
+                out += body + "\n\n";
+            else
+                out += "\\[\n" + body + "\n\\]\n\n";
             continue;
         }
 
         // ---- Luogu 扩展块：anti-ai / cute-table / align / epigraph / info 等 ----
         // 其中，anti-ai 是神秘防 AI，直接不显示
-        if (line.rfind("::cute-table", 0) == 0 || line.rfind("::anti-ai", 0) == 0)
+        if (line.rfind("::anti-ai", 0) == 0)
         {
+            ++i;
+            continue;
+        }
+        // ::cute-table{tuack} / ::cute-table{tuack=N} / ::cute-table{three}
+        // 只改变紧随其后的那张表格的画法（见 TableStyle），标记行本身不输出
+        if (line.rfind("::cute-table", 0) == 0)
+        {
+            const size_t lb = line.find('{');
+            const size_t rb = (lb == std::string::npos)
+                                  ? std::string::npos
+                                  : line.find('}', lb + 1);
+            const std::string arg =
+                (lb != std::string::npos && rb != std::string::npos && rb > lb)
+                    ? trim(line.substr(lb + 1, rb - lb - 1))
+                    : std::string();
+            if (arg.find("three") != std::string::npos)
+            {
+                pending_table_style = TableStyle{TableStyle::Three, 0};
+            }
+            else
+            {
+                // tuack=N：每 N 列插一条粗竖线分组，缺省 0 表示不分组
+                int group = 0;
+                const size_t eq = arg.find('=');
+                if (eq != std::string::npos)
+                {
+                    try
+                    {
+                        group = std::max(0, std::stoi(trim(arg.substr(eq + 1))));
+                    }
+                    catch (...)
+                    {
+                        group = 0;
+                    }
+                }
+                pending_table_style = TableStyle{TableStyle::Tuack, group};
+            }
             ++i;
             continue;
         }
@@ -155,7 +260,7 @@ std::string markdown_to_latex(const std::string &markdown)
         {
             static const std::regex kCloser(R"(^\s*:+$)", std::regex::icase);
             static const std::regex kCustom(
-                R"(^\s*:+\s*(align\{(center|right)\}|epigraph(?:\[[^\]]*\])?|(?:info|success|warning|error)(?:\[[^\]]*\])?(?:\{[^}]*\})?)\s*$)",
+                R"(^\s*:+\s*(align\{(center|right)\}|epigraph(?:\[[^\]]*\])?|(info|success|warning|error)(?:\[[^\]]*\])?(?:\{[^}]*\})?)\s*$)",
                 std::regex::icase);
             static const std::regex kTitle(R"(\[([^\]]*)\])");
 
@@ -176,17 +281,50 @@ std::string markdown_to_latex(const std::string &markdown)
                 std::string title;
                 std::smatch tm;
                 if (std::regex_search(spec, tm, kTitle))
+                {
                     title = tm[1].str();
+                    // 标题最终放在 \textbf{...} 这样的水平盒子里，块级公式
+                    // $$...$$ 会被 LaTeX 拒绝（如 :::success[$$\sum...$$]），
+                    // 统一降级为行内公式 $...$
+                    for (size_t p = title.find("$$"); p != std::string::npos;
+                         p = title.find("$$", p + 1))
+                        title.erase(p, 1);
+                }
 
+                // 折叠框（info / success / warning / error）：无论是否带 {open}
+                // 一律展开输出，用带彩色左竖线的 luogucallout* 环境（见 preamble）
+                const std::string callout = util::to_lower_ascii(m[3].str());
+                // 最外层折叠框用 framed 的 luogucallout*（逐页画彩色竖线）；
+                // 嵌套在另一个折叠框里的折叠框改用 quote，只保留缩进和彩色标题。
+                // 原因：framed 的 \MakeFramed 嵌套且跨页时会耗尽输入栈
+                // （TeX capacity exceeded），拍平嵌套层级可以避免这个限制，
+                // 外层折叠框的竖线仍然覆盖整段内容。
+                const bool nested_in_callout = inside_callout();
                 std::string env = "quote";
-                if (spec.rfind("align{center}", 0) == 0)
+                if (!callout.empty())
+                {
+                    if (!nested_in_callout)
+                        env = "luogucallout" + callout;
+                }
+                else if (spec.rfind("align{center}", 0) == 0)
                     env = "center";
                 else if (spec.rfind("align{right}", 0) == 0)
                     env = "flushright";
                 env_stack.push_back(env);
                 out += "\\begin{" + env + "}\n";
                 if (!title.empty())
-                    out += "\\textbf{" + inline_to_latex(title) + "}\\\\\n";
+                {
+                    const std::string t = inline_to_latex(title);
+                    if (!callout.empty())
+                        // 标题用与竖线相同的颜色；\par 结束标题段，
+                        // 避免标题是折叠框最后内容时 \\ 报 "no line here to end"；
+                        // \noindent 让标题与竖线/正文左缘对齐
+                        out += "\\noindent\\textbf{\\luogufontcallouttitle{}\\textcolor{luogu" + callout + "}{" + t + "}}\\par\n";
+                    else
+                        out += "\\textbf{\\luogufontcallouttitle{}" + t + "}\\\\\n";
+                }
+                if (!callout.empty())
+                    out += "\\luogufontcalloutbody\n";
                 ++i;
                 continue;
             }
@@ -201,12 +339,13 @@ std::string markdown_to_latex(const std::string &markdown)
             if (n == line.size() || line[n] == ' ')
             {
                 const std::string title = inline_to_latex(trim(line.substr(n)));
-                const bool in_quote_like = (!env_stack.empty() &&
-                                            (env_stack.back() == "quote" ||
-                                             env_stack.back() == "center" ||
-                                             env_stack.back() == "flushright"));
+                const std::string &cur_env = env_stack.empty() ? std::string() : env_stack.back();
+                const bool in_quote_like = (cur_env == "quote" ||
+                                            cur_env == "center" ||
+                                            cur_env == "flushright" ||
+                                            cur_env.rfind("luogucallout", 0) == 0);
                 static const char *kCmds[] = {"section*", "subsection*", "subsubsection*",
-                                              "paragraph*", "subparagraph*"};
+                                              "paragraph*", "subparagraph*", "paragraph*"};
                 if (in_quote_like || n > 5)
                     out += "\\textbf{" + title + "}\n\n";
                 else
@@ -302,7 +441,7 @@ std::string markdown_to_latex(const std::string &markdown)
             if (!cur.empty())
                 groups.push_back(cur);
 
-            out += "\\begin{quote}\n";
+            out += "\\begin{quote}\\luogufontquote\n";
             for (const auto &g : groups)
                 emit_paragraph_parts(g, out);
             out += "\\end{quote}\n\n";
@@ -322,7 +461,8 @@ std::string markdown_to_latex(const std::string &markdown)
                 };
                 std::vector<Frame> stack;
                 auto open_env = [&](bool ordered) {
-                    out += ordered ? "\\begin{enumerate}\n" : "\\begin{itemize}\n";
+                    out += ordered ? "\\luogufontlist\\begin{enumerate}\n"
+                                   : "\\luogufontlist\\begin{itemize}\n";
                 };
                 auto close_env = [&]() {
                     out += stack.back().ordered ? "\\end{enumerate}\n" : "\\end{itemize}\n";
@@ -413,7 +553,10 @@ std::string markdown_to_latex(const std::string &markdown)
                     ++i;
                 }
                 if (rows.size() >= 2)
-                    emit_table(rows, out);
+                {
+                    emit_table(rows, out, pending_table_style);
+                    pending_table_style = TableStyle{}; // 样式只对这张表生效
+                }
                 else
                     for (const auto &r : rows)
                         out += inline_to_latex(r) + "\n\n";
@@ -501,11 +644,11 @@ std::string problem_to_latex(const problem::Problem &p, const Options &opt)
     auto tagsdata = luogu::filter_tags_by_type(p.tags, 4);
     auto tagsarea = luogu::filter_tags_by_type(p.tags, 1);
     auto tagsspec = luogu::filter_tags_by_type(p.tags, 5);
-    if(!tagsfrom.empty() || !tagsdata.empty() || !tagsarea.empty() || !tagsspec.empty()) out += "\\hspace{5.78pt}标签：";
-    for(auto &tag : tagsfrom) tag = "\\textcolor{white}{\\colorbox[HTML]{13c2c2}{\\tagsfonts\\small\\vphantom{草}" + tag + "}}";
-    for(auto &tag : tagsdata) tag = "\\textcolor{white}{\\colorbox[HTML]{3498db}{\\tagsfonts\\small\\vphantom{草}" + tag + "}}";
-    for(auto &tag : tagsarea) tag = "\\textcolor{white}{\\colorbox[HTML]{53c41a}{\\tagsfonts\\small\\vphantom{草}" + tag + "}}";
-    for(auto &tag : tagsspec) tag = "\\textcolor{white}{\\colorbox[HTML]{f39c11}{\\tagsfonts\\small\\vphantom{草}" + tag + "}}";
+    if(!tagsfrom.empty() || !tagsdata.empty() || !tagsarea.empty() || !tagsspec.empty()) out += "\\hspace*{5.78pt}标签：";
+    for(auto &tag : tagsfrom) tag = "\\textcolor{white}{\\colorbox[HTML]{13c2c2}{\\luogufonttag\\small\\vphantom{草}" + tag + "}}";
+    for(auto &tag : tagsdata) tag = "\\textcolor{white}{\\colorbox[HTML]{3498db}{\\luogufonttag\\small\\vphantom{草}" + tag + "}}";
+    for(auto &tag : tagsarea) tag = "\\textcolor{white}{\\colorbox[HTML]{53c41a}{\\luogufonttag\\small\\vphantom{草}" + tag + "}}";
+    for(auto &tag : tagsspec) tag = "\\textcolor{white}{\\colorbox[HTML]{f39c11}{\\luogufonttag\\small\\vphantom{草}" + tag + "}}";
     if(!tagsfrom.empty()) out += util::join_strings(tagsfrom, " \\ ") + " \\ ";
     if(!tagsdata.empty()) out += util::join_strings(tagsdata, " \\ ") + " \\ ";
     if(!tagsarea.empty()) out += util::join_strings(tagsarea, " \\ ") + " \\ ";

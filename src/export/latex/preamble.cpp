@@ -1,9 +1,218 @@
 // src/export/latex/preamble.cpp
 #include "luogu-export/export/latex/preamble.h"
 
+#include <string>
+
 namespace latex::detail
 {
-void write_preamble(FILE *out)
+namespace
+{
+// 一栏字体的两种写法：不带 _cjk 的键负责西文，带 _cjk 的键负责中文。
+// 两者独立，因为 xeCJK 下 CJK 与 Latin 是两条独立的字体通道。
+std::string sibling_key(const std::string &key, const char *suffix)
+{
+    return key + suffix;
+}
+
+// 把西文/中文两部分的字体组合进 target 命令（一个无参数、声明式切换字体的宏）。
+// latin / cjk 为空表示该侧不设置；initial 是两侧都不生效时的默认写法
+// （一般填空，\texttt 用 \ttfamily）。
+//
+// 关键点：xeCJK 下中文必须用 \newCJKfontfamily 定义并切换，
+// 给 \newfontfamily 加 CJKFont 选项是没有效果的（fontspec 不认识该选项），
+// 中文会一直留在文档默认字体上。
+//
+// 字体名写错时 fontspec 会在导言区直接报错、整份文档无法编译，因此每一侧
+// 都先用 \IfFontExistsTF 检查，不存在就退回默认写法并给出警告。
+void emit_font_combination(FILE *out, const std::string &target,
+                           const std::string &initial,
+                           const std::string &latin, const std::string &cjk,
+                           const std::string &label)
+{
+    const std::string lat_cmd = target + "latin";
+    const std::string cjk_cmd = target + "cjk";
+
+    // 先给出默认定义，保证正文里的 \luogufont* 始终可用
+    std::fputs(("\\newcommand{\\" + target + "}{" + initial + "}\n").c_str(), out);
+
+    auto define_latin = [&]() {
+        return "\\newfontfamily{\\" + lat_cmd + "}{" + latin + "}";
+    };
+    auto define_cjk = [&]() {
+        return "\\newCJKfontfamily{\\" + cjk_cmd + "}{" + cjk + "}";
+    };
+    auto use_latin = [&]() {
+        return "\\renewcommand{\\" + target + "}{\\" + lat_cmd + "}";
+    };
+    auto use_cjk = [&]() {
+        return "\\renewcommand{\\" + target + "}{\\" + cjk_cmd + "}";
+    };
+    auto use_both = [&]() {
+        return "\\renewcommand{\\" + target + "}{\\" + lat_cmd + "\\" + cjk_cmd + "}";
+    };
+    auto warn = [&](const std::string &msg) {
+        return "\\PackageWarning{luogu-export}{" + msg + "}";
+    };
+
+    if (!latin.empty() && !cjk.empty())
+    {
+        std::string def;
+        def += "\\IfFontExistsTF{" + latin + "}{";
+        def += "\\IfFontExistsTF{" + cjk + "}{";
+        def += define_latin() + define_cjk() + use_both();
+        def += "}{" + define_latin() + use_latin() +
+               warn("Font '" + cjk + "' for " + label +
+                    "_cjk not found; using only the Latin font") + "}";
+        def += "}{";
+        def += "\\IfFontExistsTF{" + cjk + "}{";
+        def += define_cjk() + use_cjk() +
+               warn("Font '" + latin + "' for " + label +
+                    " not found; using only the CJK font");
+        def += "}{";
+        def += warn("Fonts '" + latin + "' and '" + cjk + "' for " + label +
+                    " not found; keeping the default font");
+        def += "}}";
+        def += "\n";
+        std::fputs(def.c_str(), out);
+    }
+    else if (!latin.empty())
+    {
+        std::fputs(("\\IfFontExistsTF{" + latin + "}{" + define_latin() + use_latin() + "}{" +
+                    warn("Font '" + latin + "' for " + label +
+                         " not found; keeping the default font") + "}\n").c_str(), out);
+    }
+    else if (!cjk.empty())
+    {
+        std::fputs(("\\IfFontExistsTF{" + cjk + "}{" + define_cjk() + use_cjk() + "}{" +
+                    warn("Font '" + cjk + "' for " + label +
+                         "_cjk not found; keeping the default font") + "}\n").c_str(), out);
+    }
+}
+
+// 定义一个局部字体宏：\cmd 生效时同时设定西文与中文。
+// 只配置了其中一边时，另一边保持当前字体；两边都是 default 则命令为空。
+void emit_font_macro(FILE *out, const std::string &cmd, const std::string &family,
+                     const settings::Values &fonts)
+{
+    const std::string latin = settings::raw_value(fonts, family);
+    const std::string cjk = settings::raw_value(fonts, sibling_key(family, "_cjk"));
+    const bool has_latin = !settings::is_default(latin);
+    const bool has_cjk = !settings::is_default(cjk);
+    emit_font_combination(out, cmd, "", has_latin ? latin : "",
+                          has_cjk ? cjk : "", family);
+}
+
+// 写出字体设置块：全局字体 + 各位置局部字体宏。
+// 全部命令都是 \def 形式，重复定义不会报错，覆盖已有定义也不需要 \makeatletter。
+void emit_fonts(FILE *out, const settings::Values &fonts)
+{
+    std::fputs("\n% ---- 字体设置（来自 luogu-export/settings.conf 的 [fonts]）----\n", out);
+
+    // 全局字体：值为 default 的键不设置，沿用 ctex 的默认字体。
+    // body / body_cjk 排在 main 之后：两者都写时以 body 为准。
+    struct GlobalFont
+    {
+        const char *key;
+        const char *command;
+    };
+    static const GlobalFont kGlobalFonts[] = {
+        {"main", "\\setmainfont"},
+        {"main_cjk", "\\setCJKmainfont"},
+        {"body", "\\setmainfont"},
+        {"body_cjk", "\\setCJKmainfont"},
+        {"sans", "\\setsansfont"},
+        {"sans_cjk", "\\setCJKsansfont"},
+        {"mono", "\\setmonofont"},
+        {"mono_cjk", "\\setCJKmonofont"},
+    };
+    for (const GlobalFont &entry : kGlobalFonts)
+    {
+        const std::string value = settings::raw_value(fonts, entry.key);
+        if (settings::is_default(value))
+            continue;
+        // 字体名写错时同样降级为警告，避免整份文档编译不出来
+        const std::string line =
+            "\\IfFontExistsTF{" + value + "}{" + entry.command + "{" + value +
+            "}}{\\PackageWarning{luogu-export}{Font '" + value + "' for " + entry.key +
+            " not found; keeping the default font}}\n";
+        std::fputs(line.c_str(), out);
+    }
+
+    // \url 默认用等宽族，这里改成跟随当前字体，与 hyperref 默认行为一致；
+    // 想给 URL 单独配字体时改 settings.conf 里的 url / url_cjk。
+    std::fputs("\\urlstyle{same}\n", out);
+
+    // 各位置的局部字体宏，供正文生成代码调用。
+    emit_font_macro(out, "luogufonttitle", "title", fonts);
+    emit_font_macro(out, "luogufonttoc", "toc", fonts);
+    emit_font_macro(out, "luogufontsection", "section", fonts);
+    emit_font_macro(out, "luogufontsubsection", "subsection", fonts);
+    emit_font_macro(out, "luogufontsubsubsection", "subsubsection", fonts);
+    emit_font_macro(out, "luogufontparagraph", "paragraph", fonts);
+    emit_font_macro(out, "luogufontheader", "header", fonts);
+    emit_font_macro(out, "luogufontfooter", "footer", fonts);
+    emit_font_macro(out, "luogufontquote", "quote", fonts);
+    emit_font_macro(out, "luogufontlist", "list", fonts);
+    emit_font_macro(out, "luogufonttable", "table", fonts);
+    emit_font_macro(out, "luogufonttableheader", "table_header", fonts);
+    emit_font_macro(out, "luogufonttablecaption", "table_caption", fonts);
+    emit_font_macro(out, "luogufontcallouttitle", "callout_title", fonts);
+    emit_font_macro(out, "luogufontcalloutbody", "callout_body", fonts);
+    emit_font_macro(out, "luogufontimagecaption", "image_caption", fonts);
+    emit_font_macro(out, "luogufontfootnote", "footnote", fonts);
+    emit_font_macro(out, "luogufontlink", "link", fonts);
+    emit_font_macro(out, "luogufonturl", "url", fonts);
+    emit_font_macro(out, "luogufonttag", "tag", fonts);
+    emit_font_macro(out, "luogufontcodeblock", "code_block", fonts);
+    emit_font_macro(out, "luogufontcodekeyword", "code_keyword", fonts);
+    emit_font_macro(out, "luogufontcodecomment", "code_comment", fonts);
+    emit_font_macro(out, "luogufontcodestring", "code_string", fonts);
+    emit_font_macro(out, "luogufontcodenumber", "code_number", fonts);
+    emit_font_macro(out, "luogufontbold", "bold", fonts);
+
+    // 行内代码与 \verb 的字体：键未配置时退回等宽字体（mono / mono_cjk），
+    // 这样只设置 mono 就能同时影响行内代码，保持旧行为。
+    const std::string code_inline = settings::raw_value(fonts, "code_inline");
+    const std::string code_inline_cjk = settings::raw_value(fonts, "code_inline_cjk");
+    const bool has_inline = !settings::is_default(code_inline);
+    const bool has_inline_cjk = !settings::is_default(code_inline_cjk);
+
+    // \texttt 是我们自己生成代码文本时用的命令（行内代码、\verb、数学里的
+    // 等宽片段），这里把它指向行内代码字体。
+    //
+    // 必须用 \DeclareTextFontCommand：它生成的命令按「声明式字体切换」展开，
+    // 能正确处理参数里出现的 $，从而兼容题面里 {$\texttt{A$\sim$ G}$} 这类
+    // 畸形写法（数学与行内代码互相嵌套）。若改成
+    // \renewcommand{\texttt}[1]{{<font> #1}}，多的那层分组会破坏定界符配对，
+    // 让这些题面报 "Missing $ inserted"。
+    //
+    // 默认按 \ttfamily（= mono）定义；配置了字体时再用组合宏覆盖，
+    // 中文部分由 \newCJKfontfamily 切换（CJKFont 选项无效）。
+    std::fputs("\\DeclareTextFontCommand{\\texttt}{\\ttfamily}\n", out);
+    if (has_inline || has_inline_cjk)
+    {
+        emit_font_combination(out, "luogufontcodeinlinedecl", "\\ttfamily",
+                              has_inline ? code_inline : "",
+                              has_inline_cjk ? code_inline_cjk : "",
+                              "code_inline");
+        std::fputs("\\DeclareTextFontCommand{\\texttt}{\\luogufontcodeinlinedecl}\n", out);
+    }
+
+    // 粗体：\\textbf 使用 [fonts] 的 bold / bold_cjk，并保留 \\bfseries
+    // （字体自带粗体时用粗体字形）。两者都是 default 时 \\luogufontbold 为空，
+    // 等同于标准的 \\bfseries。
+    std::fputs("\\DeclareTextFontCommand{\\textbf}{\\luogufontbold\\bfseries}\n", out);
+    
+    // \maketitle / \tableofcontents 的内容在导言区捕获不到，只能把命令本身
+    // 包一层字体（先存原名再重定义，避免递归）。
+    std::fputs("\\let\\luoguoriginmaketitle\\maketitle\n", out);
+    std::fputs("\\renewcommand{\\maketitle}{\\luogufonttitle\\luoguoriginmaketitle}\n", out);
+    std::fputs("\\let\\luoguorigintableofcontents\\tableofcontents\n", out);
+    std::fputs("\\renewcommand{\\tableofcontents}{\\luogufonttoc\\luoguorigintableofcontents}\n", out);
+}
+} // namespace
+
+void write_preamble(FILE *out, const settings::Values &fonts)
 {
     std::fputs("\\documentclass{book}\n", out);
     std::fputs("\\usepackage[UTF8]{ctex}\n", out);
@@ -23,29 +232,48 @@ void write_preamble(FILE *out)
     std::fputs("\\usepackage{tabularx}\n", out);
     std::fputs("\\usepackage{array}\n", out);
     std::fputs("\\usepackage{multirow}\n", out);
+    // booktabs：::cute-table{tuack}/{three} 的上下粗线、表头细线
+    std::fputs("\\usepackage{booktabs}\n", out);
+    
+    // 字体设置：全局字体 + 各位置局部字体宏（来自 settings.conf）
+    emit_fonts(out, fonts);
+
+    // framed：折叠框展开后左侧的彩色竖线。用 \MakeFramed 逐页绘制 \vrule，
+    // 而不是把整段内容包进 tcolorbox 的彩色盒子：tcolorbox 的 breakable
+    // 与 lstlisting、\color 混用时，跨页会破坏 xdvipdfmx 的颜色栈
+    // （后续正文整段变白），并且会把代码框从中间劈开造成重叠。
+    // framed 的竖线逐行绘制，可以安全跨页，也不会影响内容自身的颜色。
+    std::fputs("\\usepackage{framed}\n", out);
+    std::fputs("\\setlength{\\OuterFrameSep}{6pt}\n", out);
     std::fputs("\\geometry{margin=2cm}\n", out);
         // 去掉所有章节序号（\section 等）：目录和正文都不显示数字
     std::fputs("\\setcounter{secnumdepth}{-1}\n", out);
 
     std::fputs("\\pagestyle{fancy}\n", out);
     std::fputs("\\fancyhf{}\n", out);
-    std::fputs("\\fancyhead[LE]{\\thepage}\n", out);
-    std::fputs("\\fancyhead[RE]{\\nouppercase{\\normalfont \\rightmark}}\n", out);
-    std::fputs("\\fancyhead[LO]{\\nouppercase{\\normalfont \\rightmark}}\n", out);
-    std::fputs("\\fancyhead[RO]{\\thepage}\n", out);
+    std::fputs("\\fancyhead[LE]{\\luogufontheader\\thepage}\n", out);
+    std::fputs("\\fancyhead[RE]{\\nouppercase{\\luogufontheader\\rightmark}}\n", out);
+    std::fputs("\\fancyhead[LO]{\\nouppercase{\\luogufontheader\\rightmark}}\n", out);
+    std::fputs("\\fancyhead[RO]{\\luogufontheader\\thepage}\n", out);
+    std::fputs("\\fancyfoot[LE,RO]{\\luogufontfooter}\n", out);
+    std::fputs("\\fancyfoot[LO,RE]{\\luogufontfooter}\n", out);
 
     std::fputs("\\titleformat{\\section}\n", out);
-    std::fputs("{\\ttfamily\\Large}\n", out);
+    std::fputs("{\\luogufontsection\\Large}\n", out);
     std::fputs("{}\n", out);
     std::fputs("{0em}{}\n", out);
     std::fputs("\\titleformat{\\subsection}\n", out);
-    std::fputs("{\\ttfamily\\large}\n", out);
+    std::fputs("{\\luogufontsubsection\\large}\n", out);
     std::fputs("{}\n", out);
     std::fputs("{0em}{}\n", out);
     std::fputs("\\titleformat{\\subsubsection}\n", out);
-    std::fputs("{\\ttfamily\\color{gray}}\n", out);
+    std::fputs("{\\luogufontsubsubsection\\color{gray}}\n", out);
     std::fputs("{}\n", out);
     std::fputs("{1em}{}\n", out);
+    std::fputs("\\titleformat{\\paragraph}\n", out);
+    std::fputs("{\\luogufontparagraph\\bfseries}\n", out);
+    std::fputs("{}\n", out);
+    std::fputs("{0em}{}\n", out);
 
     std::fputs("\\lstset{\n", out);
     std::fputs("    breaklines=true,\n", out);
@@ -53,14 +281,14 @@ void write_preamble(FILE *out)
     std::fputs("    keepspaces=true,\n", out);
     std::fputs("    showstringspaces=false,\n", out);
     std::fputs("    tabsize=4,\n", out);
-    std::fputs("    keywordstyle=\\color{blue}\\bfseries,\n", out);
-    std::fputs("    commentstyle=\\color{green!50!black},\n", out);
-    std::fputs("    stringstyle=\\color{red!60!black},\n", out);
+    std::fputs("    keywordstyle=\\color{blue}\\bfseries\\luogufontcodekeyword,\n", out);
+    std::fputs("    commentstyle=\\color{green!50!black}\\luogufontcodecomment,\n", out);
+    std::fputs("    stringstyle=\\color{red!60!black}\\luogufontcodestring,\n", out);
     std::fputs("    frame=single,\n", out);
     std::fputs("    columns=flexible,\n", out);
     std::fputs("    numbers=left,\n", out);
-    std::fputs("    numberstyle=\\footnotesize\\ttfamily\\color{gray},\n", out);
-    std::fputs("    basicstyle=\\small\\ttfamily,\n", out);
+    std::fputs("    numberstyle=\\footnotesize\\luogufontcodenumber\\color{gray},\n", out);
+    std::fputs("    basicstyle=\\small\\luogufontcodeblock,\n", out);
     std::fputs("    rulecolor=\\color{blue},\n", out);
     std::fputs("}\n", out);
 
@@ -196,15 +424,15 @@ void write_preamble(FILE *out)
     std::fputs("\\providecommand{\\violet}[1]{\\textcolor{violet}{#1}}\n", out);
     std::fputs("\\lstdefinelanguage{JavaScript}{\n", out);
     std::fputs("keywords={break, case, catch, class, const, continue, debugger, default, delete, do, else, export, extends, finally, for, function, if, import, in, instanceof, let, new, return, super, switch, this, throw, try, typeof, var, void, while, with, yield, await, async, of, from, as},", out);
-    std::fputs("keywordstyle=\\color{blue}\\bfseries,\n", out);
+    std::fputs("keywordstyle=\\color{blue}\\bfseries\\luogufontcodekeyword,\n", out);
     std::fputs("ndkeywords={boolean, number, string, null, undefined, true, false},\n", out);
-    std::fputs("ndkeywordstyle=\\color{red}\\bfseries,\n", out);
+    std::fputs("ndkeywordstyle=\\color{red}\\bfseries\\luogufontcodekeyword,\n", out);
     std::fputs("identifierstyle=\\color{black},\n", out);
     std::fputs("sensitive=false,\n", out);
     std::fputs("comment=[l]{//},\n", out);
     std::fputs("morecomment=[s]{/*}{*/},", out);
-    std::fputs("commentstyle=\\color{green}\\ttfamily,\n", out);
-    std::fputs("stringstyle=\\color{purple}\\ttfamily,\n", out);
+    std::fputs("commentstyle=\\color{green}\\luogufontcodecomment,\n", out);
+    std::fputs("stringstyle=\\color{purple}\\luogufontcodestring,\n", out);
     std::fputs("morestring=[b]',\n", out);
     std::fputs("morestring=[b]\"\n", out);
     std::fputs("}\n", out);
@@ -233,8 +461,62 @@ void write_preamble(FILE *out)
     std::fputs("  }{\\mbox{}}%\n", out);
     std::fputs("}%\n", out);
 
-    std::fputs("\\setmonofont{Consolas}\n", out);
-    std::fputs("\\setCJKmonofont{SimHei}\n", out);
-    std::fputs("\\newfontfamily{\\tagsfonts}{Noto Sans}[Script = CJK, CJKFont = WenQuanYi Micro Hei]\n", out);
+
+    // 折叠框（:::info / :::success / :::warning / :::error）：洛谷上默认折叠，
+    // 导出时一律展开（忽略 {open}），并保留标题和左侧的彩色竖线。
+    // 颜色取自洛谷站点的折叠框配色。
+    //
+    // 竖线由 framed 的 \MakeFramed 在每页的左侧逐行画一条 \vrule，
+    // 内容本身不进入任何颜色组。这样：
+    //   - 跨页时不会与 tcolorbox 的 pdf:bcolor/pdf:ecolor 交叉 pop，
+    //     避免 xdvipdfmx 颜色栈里残留白色导致后续正文全部变白；
+    //   - 代码框（lstlisting）不会在分页处被劈开而与后续内容重叠。
+    // \begingroup/\endgroup 只包住环境自身，避免 \FrameCommand 泄漏到正文。
+    const char *kCalloutColors[][2] = {
+        {"info", "luoguinfo"},
+        {"success", "luogusuccess"},
+        {"warning", "luoguwarning"},
+        {"error", "luoguerror"},
+    };
+    std::fputs("\\definecolor{luoguinfo}{RGB}{46,141,214}\n", out);
+    std::fputs("\\definecolor{luogusuccess}{RGB}{72,188,25}\n", out);
+    std::fputs("\\definecolor{luoguwarning}{RGB}{255,185,22}\n", out);
+    std::fputs("\\definecolor{luoguerror}{RGB}{227,67,53}\n", out);
+    for (const auto &entry : kCalloutColors)
+    {
+        const std::string env = "luogucallout" + std::string(entry[0]);
+        // \FrameCommand 只给竖线着色：颜色放在独立的分组里，紧跟其后的
+        // 内容盒子仍沿用正文颜色。
+        const std::string def =
+            "\\newenvironment{" + env + "}{%\n"
+            "\\begingroup\n"
+            "\\def\\FrameCommand{{\\color{" + std::string(entry[1]) +
+            "}\\vrule width 3pt}\\hspace{10pt}}%\n"
+            "\\MakeFramed{\\advance\\hsize-\\width\\FrameRestore}%\n"
+            "}{%\n"
+            "\\endMakeFramed\n"
+            "\\endgroup\n"
+            "}\n";
+        std::fputs(def.c_str(), out);
+    }
+
+    // ::cute-table（tuack / three）的公共排版：自然宽度居中。
+    // booktabs 默认在横线上下各留 aboverulesep/belowrulesep 的空白，列间的
+    // 竖线会在这段空白里断开（洛谷上是连通的），这里把两段间距清零；
+    // 行高改由 \arraystretch 撑开（1.7 ≈ 站点上约 27.75pt 的行距），
+    // 既贴近站点样式又保证竖线与横线相接。
+    // \arrayrulewidth 控制列间细竖线的粗细：洛谷 CSS 为 1px，即 0.75pt
+    // （上下粗线 5px、表头线 3px 的宽度在 table.cpp 里逐条给出）。
+    std::fputs("\\newenvironment{luogucutable}{%\n", out);
+    std::fputs("\\begin{center}%\n", out);
+    std::fputs("\\begingroup\n", out);
+    std::fputs("\\renewcommand{\\arraystretch}{1.7}%\n", out);
+    std::fputs("\\setlength{\\arrayrulewidth}{0.75pt}%\n", out);
+    std::fputs("\\setlength{\\aboverulesep}{0pt}%\n", out);
+    std::fputs("\\setlength{\\belowrulesep}{0pt}%\n", out);
+    std::fputs("}{%\n", out);
+    std::fputs("\\endgroup\n", out);
+    std::fputs("\\end{center}%\n", out);
+    std::fputs("}\n", out);
 }
 } // namespace latex::detail

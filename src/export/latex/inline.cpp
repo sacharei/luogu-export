@@ -173,6 +173,70 @@ std::string allow_breaks_after_cjk(const std::string &s)
     return out;
 }
 
+// 下划线形式的斜体 _..._。
+// 按 CommonMark 的边界规则判断，避免误伤 snake_case、\_ 转义和 __...__：
+// 开 _ 前不能是字母/数字/下划线/反斜杠，后不能是空白；闭 _ 前不能是空白，
+// 后不能是字母/数字/下划线。
+std::string convert_underscore_italics(const std::string &text,
+                                       std::vector<std::string> &raws,
+                                       std::vector<bool> &is_math)
+{
+    std::string out;
+    size_t i = 0;
+    while (i < text.size())
+    {
+        if (text[i] != '_')
+        {
+            out += text[i++];
+            continue;
+        }
+
+        const bool can_open =
+            (i == 0 || (!std::isalnum(static_cast<unsigned char>(text[i - 1])) &&
+                        text[i - 1] != '_' && text[i - 1] != '\\')) &&
+            i + 1 < text.size() && text[i + 1] != '_' &&
+            !std::isspace(static_cast<unsigned char>(text[i + 1]));
+        if (!can_open)
+        {
+            out += text[i++];
+            continue;
+        }
+
+        size_t j = i + 1;
+        bool closed = false;
+        while (j < text.size())
+        {
+            if (text[j] == '\\')
+            {
+                j += 2; // 跳过 \_ 之类的转义
+                continue;
+            }
+            if (text[j] == '_' && j > i + 1 &&
+                !std::isspace(static_cast<unsigned char>(text[j - 1])) &&
+                (j + 1 >= text.size() ||
+                 (!std::isalnum(static_cast<unsigned char>(text[j + 1])) &&
+                  text[j + 1] != '_')))
+            {
+                closed = true;
+                break;
+            }
+            ++j;
+        }
+        if (!closed)
+        {
+            out += text[i++];
+            continue;
+        }
+
+        const std::string inner = text.substr(i + 1, j - i - 1);
+        raws.push_back("\\textit{" + inline_to_latex_impl(inner, raws, is_math) + "}");
+        is_math.push_back(false);
+        out += placeholder(raws.size() - 1);
+        i = j + 1;
+    }
+    return out;
+}
+
 std::string inline_to_latex_impl(const std::string &text, std::vector<std::string> &raws,
                                  std::vector<bool> &is_math)
 {
@@ -314,13 +378,14 @@ std::string inline_to_latex_impl(const std::string &text, std::vector<std::strin
             return protect("\\textbf{" + inline_to_latex_impl(m[1].str(), raws, is_math) + "}");
         });
     }
-    // 8. 斜体（下划线形式的斜体不转换，避免误伤标识符中的 _）
+    // 8. 斜体：*...* 与 _..._（后者按边界规则判断，避免误伤 snake_case）
     {
         static const std::regex re("\\*([^*]+)\\*");
         s = regex_transform(s, re, [&](const std::smatch &m) {
             return protect("\\textit{" + inline_to_latex_impl(m[1].str(), raws, is_math) + "}");
         });
     }
+    s = convert_underscore_italics(s, raws, is_math);
     // 9. 删除线
     {
         static const std::regex re("~~([^~]+)~~");

@@ -18,6 +18,7 @@
 #include <vector>
 #include <algorithm>
 #include <utility>
+#include "luogu-export/util/settings.h"
 #include <nlohmann/json.hpp>
 #include "luogu-export/crawler/crawler.h"
 #include "luogu-export/crawler/detail.h"
@@ -132,29 +133,14 @@ using namespace detail;
 
 std::filesystem::path get_cache_dir()
 {
-    if (const char *xdg_cache_home = std::getenv("XDG_CACHE_HOME"))
-    {
-        if (xdg_cache_home && *xdg_cache_home)
-            return std::filesystem::path(xdg_cache_home) / "luogu-export";
-    }
-
-    if (const char *home_env = std::getenv("HOME"))
-    {
-        if (home_env && *home_env)
-            return std::filesystem::path(home_env) / ".cache" / "luogu-export";
-    }
-
-    std::error_code ec;
-    std::filesystem::path temp_dir = std::filesystem::temp_directory_path(ec);
-    if (ec)
-        return std::filesystem::path(".cache") / "luogu-export";
-    return temp_dir / "luogu-export";
+    // 题目缓存目录（latest.ndjson / tags.json），由 settings.conf 的
+    // [paths] problem_cache 控制
+    return settings::problem_cache_dir();
 }
 
 derror download_images(const std::vector<std::string> &urls)
 {
-    std::filesystem::path cache_dir = crawler::get_cache_dir();
-    std::filesystem::path image_dir = cache_dir / "images";
+    std::filesystem::path image_dir = settings::image_cache_dir();
     std::error_code ec;
     std::filesystem::create_directories(image_dir, ec);
     if (ec)
@@ -279,6 +265,6 @@ derror download_images(const std::vector<std::string> &urls)
 
 std::filesystem::path image_cache_path(const std::string &url)
 {
-    return crawler::get_cache_dir() / "images" / image_cache_filename(url);
+    return settings::image_cache_dir() / image_cache_filename(url);
 }
 } // namespace crawler
